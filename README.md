@@ -373,37 +373,29 @@ When a spec includes resource annotations, Ploidy analyzes the type graph to det
 
 | Feature | Status | Generated output |
 |---------|--------|------------------|
-| `type: [...]` | Partial | Type-only unions become untagged enums; `[T, "null"]` unions become `Option<T>` |
+| `type: [...]` | Supported | Type-only unions become untagged enums |
+| `type: string`, `integer`, `number`, `boolean` | Supported | - |
+| `format: date-time`, `unix-time`, `date`, `uri`, `uuid`, `byte`, `binary`, `int*`, `uint*`, `float`, `double` | Supported | - |
+| `type: array`, `items` | Supported | `Vec<T>` |
 | `type: object`, `properties`, `required` | Supported | Structs with `T` or `AbsentOr<T>` fields |
 | `additionalProperties` | Supported | `BTreeMap<String, T>` when standalone; a flattened map field when mixed with named `properties` |
-| `type: array`, `items` | Supported | `Vec<T>` |
-| Scalar types and formats | Supported | Strings, booleans, signed and unsigned integers, floats, dates and times, URLs, UUIDs, Base64-encoded bytes, and binary byte buffers |
-| `$ref` | Partial | Document-relative `#/components/schemas/...` references only; no external or nested references. `$ref` schemas with adjacent keywords are treated as `allOf` |
+| `$ref` | Partial | Document-relative `#/components/schemas/...` references only; no external or nested references. `$ref` schemas with adjacent keywords become `allOf` |
 | `enum` | Supported | Enums with all string values become Rust unit enums; others become `String` type aliases |
-| `nullable`, `type: [T, "null"]`, `oneOf` with `null` | Supported | Nullable schemas become `Option<T>` type aliases; required nullable fields become `Option<T>`; optional fields become `AbsentOr<T>` |
-| `allOf` | Supported | Structs with inherited fields linearized from parent schemas |
-| `oneOf` with `discriminator` | Supported | Internally tagged enums with newtype variants |
-| `oneOf` without `discriminator` | Supported | Untagged enums with generated variant names |
-| `anyOf` | Supported | Structs with optional flattened fields for each subschema |
-| Inline schemas | Supported | Named inline types based on their semantic path |
-| Recursive schemas | Supported | `Box<T>` inserted where needed to break cycles |
+| `nullable`, `type: [T, "null"]`, `oneOf` with `null` | Supported | `nullable` schemas and `[T, "null"]` unions become `Option<T>` type aliases; required nullable fields become `Option<T>`; optional fields become `AbsentOr<T>` |
+| `allOf`, `oneOf`, `anyOf` | Supported | Covered in [Polymorphism first](#polymorphism-first) |
 | Empty or unconstrained schemas | Supported | `serde_json::Value` |
 
 ### For operations
 
 | Feature | Status | Generated output |
 |---------|--------|------------------|
-| HTTP methods | Partial | `GET`, `POST`, `PUT`, `PATCH`, and `DELETE` operations generated |
-| `operationId` | Required | Used as the Rust method name |
-| Path templates and parameters | Supported | Path parameters become `&str` arguments |
-| Query parameters | Supported | Generated as an inline type; `form`, `spaceDelimited`, `pipeDelimited`, and `deepObject` styles supported |
+| Operations | Partial | `GET`, `POST`, `PUT`, `PATCH`, and `DELETE` operations with `operationId` become async client methods |
+| Path parameters | Supported | `&str` arguments interpolated into path templates |
+| Query parameters | Supported | `{OperationId}Query` struct argument |
+| Query `style` | Supported | `form`, `spaceDelimited`, `pipeDelimited`, `deepObject` |
 | Header and cookie parameters | Unsupported | - |
 | Request bodies | Partial | `application/json` and `*/*` schemas become typed arguments; `multipart/form-data` becomes `reqwest::multipart::Form` |
 | Responses | Partial | `application/json` and `*/*` from 2xx and `default` responses become typed return values; per-status responses are ignored |
-| Authentication and security schemes | Ignored | - |
-| Servers | Ignored | - |
-| Tags | Ignored | - |
-| Callbacks, links, examples, and component headers | Ignored | - |
 
 ## Contributing
 
