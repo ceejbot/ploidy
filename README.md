@@ -13,11 +13,10 @@ Ploidy is a polymorphism-first OpenAPI compiler for Rust. It generates code that
 
 * [Getting started](#getting-started)
   - [Minimum supported Rust version](#minimum-supported-rust-version)
-* [Generating code](#generating-code)
-  - [Rust](#rust)
-    * [Options](#options)
-    * [Advanced options](#advanced-options)
-    * [Minimum Rust version for generated code](#minimum-rust-version-for-generated-code)
+* [Generating Rust code](#generating-rust-code)
+  - [Options](#options)
+  - [Advanced options](#advanced-options)
+  - [Minimum Rust version for generated code](#minimum-rust-version-for-generated-code)
 * [Why Ploidy?](#why-ploidy)
   - [Choosing the right tool](#choosing-the-right-tool)
   - [Polymorphism first](#polymorphism-first)
@@ -61,23 +60,21 @@ Ploidy's minimum supported Rust version (MSRV) is **Rust 1.89.0**. This applies 
 > [!NOTE]
 > Generated Rust code has [a different MSRV](#minimum-rust-version-for-generated-code).
 
-## Generating code
+## Generating Rust code
 
-### Rust
-
-To generate a complete Rust client crate from your OpenAPI spec, run:
+To generate a Rust crate from your OpenAPI spec, run:
 
 ```sh
-ploidy generate rust /path/to/spec.yaml
+ploidy generate rust /path/to/spec.yaml -o my-api-client
 ```
 
-This produces a crate that includes:
+This creates a `my-api-client` library crate with:
 
-* A `Cargo.toml` file that you can extend with additional metadata, dependencies, or examples. For specs with resource annotations, the generated manifest includes [per-resource feature gates](#per-resource-feature-gates).
+* A `Cargo.toml` manifest that you can extend with additional metadata, dependencies, or examples.
 * A `types` module with type definitions for each schema in your spec.
 * A `client` module with async methods for every operation in your spec.
 
-#### Options
+### Options
 
 | Flag | Description |
 |------|-------------|
@@ -86,7 +83,7 @@ This produces a crate that includes:
 | `--name <NAME>` | Set the crate name. Defaults to `package.name` in the output directory's `Cargo.toml`, if present, or the output directory name |
 | `--version <bump-major \| bump-minor \| bump-patch>` | Increment the major, minor, or patch component of the existing `package.version`. If omitted, Ploidy uses the existing version, or `0.1.0` for new crates |
 
-#### Advanced options
+### Advanced options
 
 Ploidy reads additional options from `[package.metadata.ploidy]` in the generated crate's `Cargo.toml`:
 
@@ -107,7 +104,7 @@ date-time-format = "unix-seconds"
 # date-time-format = "rfc3339"            # Use `chrono::DateTime<Utc>` (RFC 3339 / ISO 8601 strings).
 ```
 
-#### Minimum Rust version for generated code
+### Minimum Rust version for generated code
 
 The MSRV for the generated crate is **Rust 1.86.0**.
 
@@ -120,7 +117,7 @@ Use Ploidy when:
 * Your spec has many inline schemas, and you want the same strongly-typed models for them as for named schemas.
 * Your spec has recursive or cyclic types.
 * Your spec has [resource annotations](#cargo-features), and you want consumers to compile just the types and operations they need.
-* Your spec uses [some OpenAPI 3.1 features](#supported-openapi-features).
+* Your spec uses [some OpenAPI 3.1+ features](#supported-openapi-features).
 * You want to generate Rust that reads like you wrote it.
 
 ### Choosing the right tool
@@ -169,7 +166,7 @@ Generated code looks like it was written by an experienced Rust developer:
 * **Boxing** for recursive types.
 * **A RESTful client with async endpoints**, using [Reqwest](https://docs.rs/reqwest) with the [Tokio](https://tokio.rs) runtime.
 
-For example, given this schema:
+For example, given this `oneOf` schema:
 
 ```yaml
 PaymentMethod:
@@ -190,8 +187,8 @@ Ploidy generates code like:
     Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize,
     JsonPointee, JsonPointerTarget,
 )]
-#[serde(tag = "type")]
-#[ploidy(pointer(tag = "type"))]
+#[serde(crate = "::ploidy_util::serde", tag = "type")]
+#[ploidy(pointer(crate = "::ploidy_util::pointer", tag = "type"))]
 pub enum PaymentMethod {
     #[serde(rename = "card")]
     #[ploidy(pointer(rename = "card"))]
@@ -215,6 +212,118 @@ impl From<BankAccount> for PaymentMethod {
 }
 ```
 
+For `allOf`:
+
+```yaml
+User:
+  type: object
+  required: [id, email]
+  properties:
+    id:
+      type: string
+    email:
+      type: string
+AdminUser:
+  allOf:
+    - $ref: "#/components/schemas/User"
+  required: [role]
+  properties:
+    role:
+      type: string
+```
+
+Ploidy merges all properties into the generated struct:
+
+```rust
+#[derive(
+    Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize,
+    JsonPointee, JsonPointerTarget,
+)]
+#[serde(crate = "::ploidy_util::serde")]
+#[ploidy(pointer(crate = "::ploidy_util::pointer"))]
+pub struct AdminUser {
+    pub id: String,
+    pub email: String,
+    pub role: String,
+}
+```
+
+For `anyOf`:
+
+```yaml
+Address:
+  type: object
+  properties:
+    street:
+      type: string
+Email:
+  type: object
+  properties:
+    email:
+      type: string
+Contact:
+  anyOf:
+    - $ref: "#/components/schemas/Address"
+    - $ref: "#/components/schemas/Email"
+```
+
+Ploidy generates a struct with optional flattened fields for each subschema:
+
+```rust
+#[derive(
+    Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize,
+    JsonPointee, JsonPointerTarget,
+)]
+#[serde(crate = "::ploidy_util::serde")]
+#[ploidy(pointer(crate = "::ploidy_util::pointer"))]
+pub struct Contact {
+    #[serde(flatten, default, skip_serializing_if = "AbsentOr::is_absent")]
+    #[ploidy(pointer(flatten))]
+    pub address: AbsentOr<Address>,
+    #[serde(flatten, default, skip_serializing_if = "AbsentOr::is_absent")]
+    #[ploidy(pointer(flatten))]
+    pub email: AbsentOr<Email>,
+}
+```
+
+In the generated client, parameters and request bodies become method arguments, and response schemas become return types. Given an operation like:
+
+```yaml
+/users/{id}:
+  get:
+    operationId: getUser
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    responses:
+      "200":
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/User"
+```
+
+You can use the generated method like:
+
+```rust
+use my_api_client::{Client, Error};
+
+#[tokio::main]
+async fn main() -> Result<(), Error> {
+    let client = Client::new("https://api.example.com/v1")?
+        .with_sensitive_header("Authorization", "Bearer decafbadcafed00d")?
+        .with_user_agent("my-api-client/0.1")?;
+
+    let user = client.get_user("user_123").await?;
+    println!("{} <{}>", user.id, user.email);
+
+    Ok(())
+}
+```
+
 ### Per-resource feature gates
 
 Large OpenAPI specs can define hundreds of API resources, but most consumers only use a handful. Ploidy generates [Cargo features](https://doc.rust-lang.org/cargo/reference/features.html) for each resource, so your crates can compile just the types and client methods that they need.
@@ -233,7 +342,7 @@ All features are enabled by default, so the generated crate works out of the box
 
 ```toml
 [dependencies]
-my-api = { version = "1", default-features = false, features = ["customer"] }
+my-api-client = { version = "1", default-features = false, features = ["customer"] }
 ```
 
 This compiles just the `Customer` type—and its dependency, `BillingInfo`—along with the client methods for customer operations. Types and methods for other resources are excluded entirely, reducing compile times and binary size for large specs.
