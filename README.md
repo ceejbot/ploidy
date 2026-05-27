@@ -187,8 +187,8 @@ Ploidy generates code like:
     Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize,
     JsonPointee, JsonPointerTarget,
 )]
-#[serde(crate = "::ploidy_util::serde", tag = "type")]
-#[ploidy(pointer(crate = "::ploidy_util::pointer", tag = "type"))]
+#[serde(tag = "type")]
+#[ploidy(pointer(tag = "type"))]
 pub enum PaymentMethod {
     #[serde(rename = "card")]
     #[ploidy(pointer(rename = "card"))]
@@ -239,8 +239,6 @@ Ploidy merges all properties into the generated struct:
     Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize,
     JsonPointee, JsonPointerTarget,
 )]
-#[serde(crate = "::ploidy_util::serde")]
-#[ploidy(pointer(crate = "::ploidy_util::pointer"))]
 pub struct AdminUser {
     pub id: String,
     pub email: String,
@@ -274,8 +272,6 @@ Ploidy generates a struct with optional flattened fields for each subschema:
     Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize,
     JsonPointee, JsonPointerTarget,
 )]
-#[serde(crate = "::ploidy_util::serde")]
-#[ploidy(pointer(crate = "::ploidy_util::pointer"))]
 pub struct Contact {
     #[serde(flatten, default, skip_serializing_if = "AbsentOr::is_absent")]
     #[ploidy(pointer(flatten))]
