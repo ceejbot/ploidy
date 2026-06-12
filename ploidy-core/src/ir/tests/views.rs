@@ -10,7 +10,10 @@ use crate::{
         RawGraph, RequestView, Required, ResponseView, SchemaTypeInfo, SchemaTypeView, Spec,
         StructFieldName, TypeView, View,
     },
-    parse::{Document, Method, path::PathFragment},
+    parse::{
+        Document, Method,
+        path::{PathFragment, PathSegment},
+    },
     tests::assert_matches,
 };
 
@@ -2554,12 +2557,13 @@ fn test_operation_path() {
     let graph = RawGraph::new(&arena, &spec).cook();
 
     let operation = graph.operations().next().unwrap();
-    let segments = operation.path().segments().as_slice();
-    let [a, b] = segments else {
-        panic!("expected two path segments; got {segments:?}");
-    };
-    assert_matches!(a.fragments(), [PathFragment::Literal("users")],);
-    assert_matches!(b.fragments(), [PathFragment::Param("id")]);
+    assert_matches!(
+        operation.path().segments().as_slice(),
+        [
+            PathSegment::Literal("users"),
+            PathSegment::Templated([PathFragment::Param("id")]),
+        ],
+    );
 }
 
 #[test]

@@ -75,7 +75,7 @@ use crate::{
     },
     parse::{
         Method,
-        path::{PathQueryParameter, PathSegment},
+        path::{PathQueryParameter, PathRuns, PathSegment},
     },
 };
 
@@ -236,6 +236,12 @@ impl<'view, 'graph, 'a> OperationViewPath<'view, 'graph, 'a> {
     #[inline]
     pub fn segments(self) -> std::slice::Iter<'view, PathSegment<'a>> {
         self.0.op.path.segments.iter()
+    }
+
+    /// Returns this path's segments coalesced into runs.
+    #[inline]
+    pub fn runs(self) -> PathRuns<'view, 'a> {
+        self.0.op.path.runs()
     }
 
     /// Returns an iterator over any literal query parameters

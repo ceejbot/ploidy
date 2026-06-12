@@ -1,7 +1,10 @@
 use itertools::Itertools;
 use ploidy_core::{
     ir::{OperationView, RequestView, ResponseView},
-    parse::{Method, path::PathFragment},
+    parse::{
+        Method,
+        path::{PathFragment, PathRun},
+    },
 };
 use proc_macro2::{Span, TokenStream};
 use quote::{ToTokens, TokenStreamExt, format_ident, quote};
@@ -28,48 +31,47 @@ impl<'a> CodegenOperation<'a> {
     /// Generates code to build and interpolate path parameters into
     /// the request URL.
     fn url(&self) -> TokenStream {
-        let segments = self
-            .op
-            .path()
-            .segments()
-            .map(|segment| match segment.fragments() {
-                [] => quote! { "" },
-                [PathFragment::Literal(text)] => quote! { #text },
-                [PathFragment::Param(name)] => {
-                    let param = CodegenIdentUsage::Param(
-                        self.graph.ident(IdentMapping::Path(self.op.id(), name)),
-                    );
-                    quote!(#param)
-                }
-                fragments => {
-                    // Build a format string, with placeholders for parameter fragments.
-                    let format = fragments.iter().fold(String::new(), |mut f, fragment| {
-                        match fragment {
-                            PathFragment::Literal(text) => {
-                                f.push_str(&text.replace('{', "{{").replace('}', "}}"))
-                            }
-                            PathFragment::Param(_) => f.push_str("{}"),
+        let segments = self.op.path().runs().map(|run| match run {
+            PathRun::Literals(literals) => match &*literals {
+                [one] => quote! { .push(#one) },
+                many => quote! { .extend(&[#(#many),*]) },
+            },
+            PathRun::Templated([PathFragment::Param(name)]) => {
+                let param = CodegenIdentUsage::Param(
+                    self.graph.ident(IdentMapping::Path(self.op.id(), name)),
+                );
+                quote! { .push(#param) }
+            }
+            PathRun::Templated(fragments) => {
+                // Build a format string, with placeholders for parameter fragments.
+                let format = fragments.iter().fold(String::new(), |mut f, fragment| {
+                    match fragment {
+                        PathFragment::Literal(text) => {
+                            f.push_str(&text.replace('{', "{{").replace('}', "}}"))
                         }
-                        f
+                        PathFragment::Param(_) => f.push_str("{}"),
+                    }
+                    f
+                });
+                let args = fragments
+                    .iter()
+                    .filter_map(|fragment| match fragment {
+                        PathFragment::Param(name) => Some(name),
+                        PathFragment::Literal(_) => None,
+                    })
+                    .map(|name| {
+                        // `url::PathSegmentsMut::push` percent-encodes the
+                        // full segment, so we can interpolate fragments
+                        // directly.
+                        let param = CodegenIdentUsage::Param(
+                            self.graph.ident(IdentMapping::Path(self.op.id(), name)),
+                        );
+                        quote!(#param)
                     });
-                    let args = fragments
-                        .iter()
-                        .filter_map(|fragment| match fragment {
-                            PathFragment::Param(name) => Some(name),
-                            PathFragment::Literal(_) => None,
-                        })
-                        .map(|name| {
-                            // `url::PathSegmentsMut::push` percent-encodes the
-                            // full segment, so we can interpolate fragments
-                            // directly.
-                            let param = CodegenIdentUsage::Param(
-                                self.graph.ident(IdentMapping::Path(self.op.id(), name)),
-                            );
-                            quote!(#param)
-                        });
-                    quote! { &format!(#format, #(#args),*) }
-                }
-            });
+                quote! { .push(&format!(#format, #(#args),*)) }
+            }
+        });
+
         let query = self
             .op
             .path()
@@ -94,7 +96,7 @@ impl<'a> CodegenOperation<'a> {
                     .path_segments_mut()
                     .map(|mut segments| {
                         segments.pop_if_empty()
-                            #(.push(#segments))*;
+                            #(#segments)*;
                     });
                 #query
                 url
@@ -773,8 +775,7 @@ mod tests {
                         .path_segments_mut()
                         .map(|mut segments| {
                             segments.pop_if_empty()
-                                .push("v1")
-                                .push("messages");
+                                .extend(&["v1", "messages"]);
                         });
                     url.query_pairs_mut()
                         .append_pair("beta", "true")
@@ -859,8 +860,7 @@ mod tests {
                         .path_segments_mut()
                         .map(|mut segments| {
                             segments.pop_if_empty()
-                                .push("v1")
-                                .push("messages");
+                                .extend(&["v1", "messages"]);
                         });
                     url.query_pairs_mut()
                         .append_pair("beta", "true");
@@ -950,8 +950,7 @@ mod tests {
                         .path_segments_mut()
                         .map(|mut segments| {
                             segments.pop_if_empty()
-                                .push("v1")
-                                .push("models")
+                                .extend(&["v1", "models"])
                                 .push(model_id);
                         });
                     url.query_pairs_mut()

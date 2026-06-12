@@ -9,7 +9,7 @@ use crate::{
         self, Document, Info, Method, Operation, Parameter, ParameterLocation,
         ParameterStyle as ParsedParameterStyle, RefOrParameter, RefOrRequestBody, RefOrResponse,
         RefOrSchema, RequestBody, Response,
-        path::{ParsedPath, PathFragment},
+        path::{ParsedPath, PathFragment, PathSegment},
     },
 };
 
@@ -124,7 +124,10 @@ impl<'a> Spec<'a> {
                         item.path
                             .segments
                             .iter()
-                            .flat_map(|segment| segment.fragments())
+                            .flat_map(|segment| match segment {
+                                &PathSegment::Templated(fragments) => fragments,
+                                PathSegment::Literal(_) => &[],
+                            })
                             .filter_map(|fragment| match fragment {
                                 &PathFragment::Param(name) => Some(name),
                                 _ => None,

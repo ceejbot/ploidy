@@ -489,8 +489,7 @@ mod tests {
                             .path_segments_mut()
                             .map(|mut segments| {
                                 segments.pop_if_empty()
-                                    .push("customers")
-                                    .push("search");
+                                    .extend(&["customers", "search"]);
                             });
                         url
                     };

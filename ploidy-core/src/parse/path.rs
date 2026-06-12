@@ -1,7 +1,8 @@
 use std::fmt::{Display, Formatter, Result as FmtResult, Write};
 
+use itertools::Itertools;
 use miette::SourceSpan;
-use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
+use percent_encoding::{AsciiSet, CONTROLS, PercentEncode, utf8_percent_encode};
 use winnow::{
     Parser, Stateful,
     combinator::eof,
@@ -9,21 +10,6 @@ use winnow::{
 };
 
 use crate::arena::Arena;
-
-// The WHATWG URL path percent-encode set, plus `/` and `%`.
-const PATH_SEGMENT_PERCENT_ENCODE_SET: &AsciiSet = &CONTROLS
-    .add(b' ')
-    .add(b'"')
-    .add(b'#')
-    .add(b'<')
-    .add(b'>')
-    .add(b'?')
-    .add(b'^')
-    .add(b'`')
-    .add(b'{')
-    .add(b'}')
-    .add(b'/')
-    .add(b'%');
 
 /// Parser input threaded with an allocation [`Arena`].
 type Input<'a> = Stateful<&'a str, &'a Arena>;
@@ -58,23 +44,33 @@ pub struct ParsedPath<'a> {
     pub query: &'a [PathQueryParameter<'a>],
 }
 
+impl<'a> ParsedPath<'a> {
+    /// Returns the path's segments coalesced into runs.
+    #[inline]
+    pub fn runs(&self) -> PathRuns<'_, 'a> {
+        PathRuns {
+            rest: self.segments,
+        }
+    }
+}
+
 impl Display for ParsedPath<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         for segment in self.segments {
             f.write_char('/')?;
-            segment
-                .fragments()
-                .iter()
-                .try_for_each(|fragment| match fragment {
-                    PathFragment::Literal(text) => {
-                        write!(
-                            f,
-                            "{}",
-                            utf8_percent_encode(text, PATH_SEGMENT_PERCENT_ENCODE_SET)
-                        )
-                    }
-                    PathFragment::Param(name) => write!(f, "{{{name}}}"),
-                })?;
+            match segment {
+                PathSegment::Literal(text) => {
+                    write!(f, "{}", path_percent_encode(text))?;
+                }
+                PathSegment::Templated(fragments) => {
+                    fragments.iter().try_for_each(|fragment| match fragment {
+                        PathFragment::Literal(text) => {
+                            write!(f, "{}", path_percent_encode(text))
+                        }
+                        PathFragment::Param(name) => write!(f, "{{{name}}}"),
+                    })?;
+                }
+            }
         }
 
         if !self.query.is_empty() {
@@ -97,16 +93,13 @@ pub struct PathQueryParameter<'a> {
     pub value: &'a str,
 }
 
-/// A slash-delimited path segment that contains zero or more
-/// template fragments.
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
-pub struct PathSegment<'input>(&'input [PathFragment<'input>]);
-
-impl<'input> PathSegment<'input> {
-    /// Returns the template fragments within this segment.
-    pub fn fragments(&self) -> &'input [PathFragment<'input>] {
-        self.0
-    }
+/// A slash-delimited path segment.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum PathSegment<'a> {
+    /// A segment containing only literal text, possibly empty.
+    Literal(&'a str),
+    /// A segment containing at least one parameter fragment.
+    Templated(&'a [PathFragment<'a>]),
 }
 
 /// A fragment within a path segment.
@@ -116,6 +109,46 @@ pub enum PathFragment<'input> {
     Literal(&'input str),
     /// Template parameter name.
     Param(&'input str),
+}
+
+/// A run of path segments.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub enum PathRun<'a> {
+    /// The text of consecutive literal-only segments.
+    Literals(Vec<&'a str>),
+    /// A segment with at least one parameter fragment.
+    Templated(&'a [PathFragment<'a>]),
+}
+
+/// Iterates over a path's segments in runs.
+#[derive(Clone, Copy, Debug)]
+pub struct PathRuns<'path, 'input> {
+    rest: &'path [PathSegment<'input>],
+}
+
+impl<'path, 'input> Iterator for PathRuns<'path, 'input> {
+    type Item = PathRun<'input>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.rest {
+            [] => None,
+            segments @ [PathSegment::Literal(_), ..] => {
+                let literals = segments
+                    .iter()
+                    .map_while(|segment| match segment {
+                        &PathSegment::Literal(text) => Some(text),
+                        PathSegment::Templated(_) => None,
+                    })
+                    .collect_vec();
+                self.rest = &self.rest[literals.len()..];
+                Some(PathRun::Literals(literals))
+            }
+            [PathSegment::Templated(fragments), tail @ ..] => {
+                self.rest = tail;
+                Some(PathRun::Templated(fragments))
+            }
+        }
+    }
 }
 
 mod parser {
@@ -159,14 +192,19 @@ mod parser {
             ('/', segment, template)
                 .map(|(_, head, tail)| std::iter::once(head).chain(tail).collect()),
             ('/', segment).map(|(_, segment)| vec![segment]),
-            '/'.map(|_| vec![PathSegment::default()]),
+            '/'.map(|_| vec![PathSegment::Literal("")]),
         ))
         .parse_next(input)
     }
 
     fn segment<'a>(input: &mut Input<'a>) -> winnow::Result<PathSegment<'a>> {
         repeat(1.., fragment)
-            .map(|fragments: Vec<_>| PathSegment(input.state.alloc_slice_copy(&fragments)))
+            .map(|fragments: Vec<_>| match &*fragments {
+                // Maximal munch can't produce adjacent literal fragments,
+                // so a literal-only segment has exactly one fragment.
+                [PathFragment::Literal(text)] => PathSegment::Literal(text),
+                _ => PathSegment::Templated(input.state.alloc_slice_copy(&fragments)),
+            })
             .parse_next(input)
     }
 
@@ -234,6 +272,24 @@ impl BadPath {
     }
 }
 
+fn path_percent_encode(text: &str) -> PercentEncode<'_> {
+    // The WHATWG URL path percent-encode set, plus `/` and `%`.
+    const PATH_SEGMENT_PERCENT_ENCODE_SET: &AsciiSet = &CONTROLS
+        .add(b' ')
+        .add(b'"')
+        .add(b'#')
+        .add(b'<')
+        .add(b'>')
+        .add(b'?')
+        .add(b'^')
+        .add(b'`')
+        .add(b'{')
+        .add(b'}')
+        .add(b'/')
+        .add(b'%');
+    utf8_percent_encode(text, PATH_SEGMENT_PERCENT_ENCODE_SET)
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -245,7 +301,7 @@ mod test {
         let arena = Arena::new();
         let result = parse(&arena, "/").unwrap();
 
-        assert_matches!(result.segments, [PathSegment([])]);
+        assert_matches!(result.segments, [PathSegment::Literal("")]);
         assert!(result.query.is_empty());
     }
 
@@ -254,10 +310,7 @@ mod test {
         let arena = Arena::new();
         let result = parse(&arena, "/users").unwrap();
 
-        assert_matches!(
-            result.segments,
-            [PathSegment([PathFragment::Literal("users")])],
-        );
+        assert_matches!(result.segments, [PathSegment::Literal("users")],);
     }
 
     #[test]
@@ -267,10 +320,7 @@ mod test {
 
         assert_matches!(
             result.segments,
-            [
-                PathSegment([PathFragment::Literal("users")]),
-                PathSegment([]),
-            ],
+            [PathSegment::Literal("users"), PathSegment::Literal(""),],
         );
     }
 
@@ -282,8 +332,8 @@ mod test {
         assert_matches!(
             result.segments,
             [
-                PathSegment([PathFragment::Literal("users")]),
-                PathSegment([PathFragment::Param("userId")]),
+                PathSegment::Literal("users"),
+                PathSegment::Templated([PathFragment::Param("userId")]),
             ],
         );
     }
@@ -296,10 +346,10 @@ mod test {
         assert_matches!(
             result.segments,
             [
-                PathSegment([PathFragment::Literal("api")]),
-                PathSegment([PathFragment::Literal("v1")]),
-                PathSegment([PathFragment::Literal("resources")]),
-                PathSegment([PathFragment::Param("resourceId")]),
+                PathSegment::Literal("api"),
+                PathSegment::Literal("v1"),
+                PathSegment::Literal("resources"),
+                PathSegment::Templated([PathFragment::Param("resourceId")]),
             ],
         );
     }
@@ -312,10 +362,10 @@ mod test {
         assert_matches!(
             result.segments,
             [
-                PathSegment([PathFragment::Literal("users")]),
-                PathSegment([PathFragment::Param("userId")]),
-                PathSegment([PathFragment::Literal("posts")]),
-                PathSegment([PathFragment::Param("postId")]),
+                PathSegment::Literal("users"),
+                PathSegment::Templated([PathFragment::Param("userId")]),
+                PathSegment::Literal("posts"),
+                PathSegment::Templated([PathFragment::Param("postId")]),
             ],
         );
     }
@@ -332,18 +382,62 @@ mod test {
         assert_matches!(
             result.segments,
             [
-                PathSegment([PathFragment::Literal("v1")]),
-                PathSegment([PathFragment::Literal("storage")]),
-                PathSegment([PathFragment::Literal("workspace")]),
-                PathSegment([PathFragment::Param("workspace")]),
-                PathSegment([PathFragment::Literal("documents")]),
-                PathSegment([PathFragment::Literal("download")]),
-                PathSegment([
+                PathSegment::Literal("v1"),
+                PathSegment::Literal("storage"),
+                PathSegment::Literal("workspace"),
+                PathSegment::Templated([PathFragment::Param("workspace")]),
+                PathSegment::Literal("documents"),
+                PathSegment::Literal("download"),
+                PathSegment::Templated([
                     PathFragment::Param("documentId"),
                     PathFragment::Literal(".pdf"),
                 ]),
             ],
         );
+    }
+
+    #[test]
+    fn test_runs_coalesce_literals() {
+        let arena = Arena::new();
+        let result = parse(
+            &arena,
+            "/v1/storage/workspace/{workspace}/documents/download/{documentId}.pdf",
+        )
+        .unwrap();
+
+        let mut runs = result.runs();
+
+        assert_eq!(
+            runs.next(),
+            Some(PathRun::Literals(vec!["v1", "storage", "workspace"])),
+        );
+        assert_matches!(
+            runs.next(),
+            Some(PathRun::Templated([PathFragment::Param("workspace")])),
+        );
+        assert_eq!(
+            runs.next(),
+            Some(PathRun::Literals(vec!["documents", "download"])),
+        );
+        assert_matches!(
+            runs.next(),
+            Some(PathRun::Templated([
+                PathFragment::Param("documentId"),
+                PathFragment::Literal(".pdf"),
+            ])),
+        );
+        assert_matches!(runs.next(), None);
+    }
+
+    #[test]
+    fn test_runs_empty_segments() {
+        let arena = Arena::new();
+        let result = parse(&arena, "/users/").unwrap();
+
+        let mut runs = result.runs();
+
+        assert_eq!(runs.next(), Some(PathRun::Literals(vec!["users", ""])));
+        assert_matches!(runs.next(), None);
     }
 
     #[test]
@@ -358,13 +452,13 @@ mod test {
         assert_matches!(
             result.segments,
             [
-                PathSegment([PathFragment::Literal("v1")]),
-                PathSegment([PathFragment::Literal("storage")]),
-                PathSegment([PathFragment::Literal("workspace")]),
-                PathSegment([PathFragment::Param("workspace")]),
-                PathSegment([PathFragment::Literal("documents")]),
-                PathSegment([PathFragment::Literal("download")]),
-                PathSegment([
+                PathSegment::Literal("v1"),
+                PathSegment::Literal("storage"),
+                PathSegment::Literal("workspace"),
+                PathSegment::Templated([PathFragment::Param("workspace")]),
+                PathSegment::Literal("documents"),
+                PathSegment::Literal("download"),
+                PathSegment::Templated([
                     PathFragment::Literal("report-"),
                     PathFragment::Param("documentId"),
                     PathFragment::Literal(".pdf"),
@@ -396,10 +490,7 @@ mod test {
         assert_matches!(
             result,
             ParsedPath {
-                segments: [
-                    PathSegment([PathFragment::Literal("v1")]),
-                    PathSegment([PathFragment::Literal("messages")]),
-                ],
+                segments: [PathSegment::Literal("v1"), PathSegment::Literal("messages"),],
                 query: [PathQueryParameter {
                     name: "beta",
                     value: "true",
@@ -416,10 +507,7 @@ mod test {
         assert_matches!(
             result,
             ParsedPath {
-                segments: [
-                    PathSegment([PathFragment::Literal("v1")]),
-                    PathSegment([PathFragment::Literal("items")]),
-                ],
+                segments: [PathSegment::Literal("v1"), PathSegment::Literal("items")],
                 query: [
                     PathQueryParameter {
                         name: "beta",
@@ -443,9 +531,9 @@ mod test {
             result,
             ParsedPath {
                 segments: [
-                    PathSegment([PathFragment::Literal("v1")]),
-                    PathSegment([PathFragment::Literal("models")]),
-                    PathSegment([PathFragment::Param("model_id")]),
+                    PathSegment::Literal("v1"),
+                    PathSegment::Literal("models"),
+                    PathSegment::Templated([PathFragment::Param("model_id")]),
                 ],
                 query: [PathQueryParameter {
                     name: "beta",
@@ -493,10 +581,7 @@ mod test {
         assert_matches!(
             result,
             ParsedPath {
-                segments: [
-                    PathSegment([PathFragment::Literal("v1")]),
-                    PathSegment([PathFragment::Literal("items")]),
-                ],
+                segments: [PathSegment::Literal("v1"), PathSegment::Literal("items"),],
                 query: [PathQueryParameter {
                     name: "beta",
                     value: "",
@@ -513,7 +598,7 @@ mod test {
         assert_matches!(
             result,
             ParsedPath {
-                segments: [PathSegment([PathFragment::Literal("foo")])],
+                segments: [PathSegment::Literal("foo")],
                 query: [],
             },
         );
@@ -527,7 +612,7 @@ mod test {
         assert_matches!(
             result,
             ParsedPath {
-                segments: [PathSegment([PathFragment::Literal("foo")])],
+                segments: [PathSegment::Literal("foo")],
                 query: [PathQueryParameter {
                     name: "a b",
                     value: "c d",
@@ -544,7 +629,7 @@ mod test {
         assert_matches!(
             result,
             ParsedPath {
-                segments: [PathSegment([])],
+                segments: [PathSegment::Literal("")],
                 query: [PathQueryParameter {
                     name: "beta",
                     value: "true",
