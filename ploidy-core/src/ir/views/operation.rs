@@ -2,7 +2,7 @@
 //!
 //! In OpenAPI, each path item defines operations for HTTP methods like
 //! `GET` and `POST`. An operation has path and query parameters, an
-//! optional request body, and an optional response body:
+//! optional request body, and successful response bodies:
 //!
 //! ```yaml
 //! paths:
@@ -38,8 +38,8 @@
 //!   segments and path parameters.
 //! * [Query parameters], each with a name, type, and
 //!   optional serialization style.
-//! * An optional [request] and [response] body, each wrapping
-//!   a [`TypeView`] of the body schema.
+//! * An optional [request] body and successful [response cases], wrapping
+//!   [`TypeView`]s of body schemas when present.
 //! * An optional [resource name] from the `x-resource-name` extension,
 //!   used to group operations by resource.
 //!
@@ -51,7 +51,7 @@
 //! [path template]: OperationView::path
 //! [Query parameters]: OperationView::query
 //! [request]: OperationView::request
-//! [response]: OperationView::response
+//! [response cases]: OperationView::response_cases
 //! [resource name]: OperationView::resource
 
 use std::{
@@ -142,9 +142,16 @@ impl<'graph, 'a> OperationView<'graph, 'a> {
     /// Returns a view of the response body, if present.
     #[inline]
     pub fn response(&self) -> Option<ResponseView<'graph, 'a>> {
-        self.op.response.as_ref().map(|ty| match ty {
-            GraphResponse::Json(index) => ResponseView::Json(TypeView::new(self.cooked, *index)),
-        })
+        self.response_cases().find_map(|case| case.body())
+    }
+
+    /// Returns an iterator over this operation's successful response cases.
+    #[inline]
+    pub fn response_cases(&self) -> impl Iterator<Item = ResponseCaseView<'graph, 'a>> {
+        self.op
+            .responses
+            .iter()
+            .map(|case| ResponseCaseView::new(self.cooked, case.status, case.body))
     }
 }
 
@@ -398,4 +405,41 @@ pub enum RequestView<'graph, 'a> {
 #[derive(Debug)]
 pub enum ResponseView<'graph, 'a> {
     Json(TypeView<'graph, 'a>),
+}
+
+/// A graph-aware view of an operation response case.
+#[derive(Clone, Copy, Debug)]
+pub struct ResponseCaseView<'graph, 'a> {
+    cooked: &'graph CookedGraph<'a>,
+    status: u16,
+    body: Option<GraphResponse>,
+}
+
+impl<'graph, 'a> ResponseCaseView<'graph, 'a> {
+    #[inline]
+    pub(in crate::ir) fn new(
+        cooked: &'graph CookedGraph<'a>,
+        status: u16,
+        body: Option<GraphResponse>,
+    ) -> Self {
+        Self {
+            cooked,
+            status,
+            body,
+        }
+    }
+
+    /// Returns the HTTP status code for this response case.
+    #[inline]
+    pub fn status(&self) -> u16 {
+        self.status
+    }
+
+    /// Returns the response body, if present.
+    #[inline]
+    pub fn body(&self) -> Option<ResponseView<'graph, 'a>> {
+        self.body.map(|ty| match ty {
+            GraphResponse::Json(index) => ResponseView::Json(TypeView::new(self.cooked, index)),
+        })
+    }
 }

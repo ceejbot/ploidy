@@ -2738,7 +2738,7 @@ fn test_operation_view_inlines_finds_inline_types() {
                     && matches!(
                         inline.path().root(),
                         InlineTypePathRoot::Operation {
-                            usage: OperationUsage::Response,
+                            usage: OperationUsage::Response { status: None },
                             ..
                         },
                     )
@@ -2815,10 +2815,124 @@ fn test_operation_request_and_response() {
         InlineTypePathRoot::Operation {
             id,
             resource: None,
-            usage: OperationUsage::Response,
+            usage: OperationUsage::Response { status: None },
         } if id == "createUser",
     );
     assert!(resp_path.segments().next().is_none());
+}
+
+#[test]
+fn test_operation_response_cases_preserve_statuses() {
+    let doc = Document::from_yaml(indoc::indoc! {"
+        openapi: 3.0.0
+        info:
+          title: Test
+          version: 1.0
+        paths:
+          /jobs:
+            post:
+              operationId: startJob
+              responses:
+                '200':
+                  description: Complete
+                  content:
+                    application/json:
+                      schema:
+                        $ref: '#/components/schemas/Job'
+                '202':
+                  description: Accepted
+                  content:
+                    application/json:
+                      schema:
+                        $ref: '#/components/schemas/PendingJob'
+        components:
+          schemas:
+            Job:
+              type: object
+            PendingJob:
+              type: object
+    "})
+    .unwrap();
+
+    let arena = Arena::new();
+    let spec = Spec::from_doc(&arena, &doc).unwrap();
+    let graph = RawGraph::new(&arena, &spec).cook();
+
+    let operation = graph.operations().next().unwrap();
+    let cases = operation.response_cases().collect_vec();
+    let [complete, pending] = &*cases else {
+        panic!("expected two response cases; got `{cases:?}`");
+    };
+    assert_eq!(complete.status(), 200);
+    let Some(ResponseView::Json(TypeView::Schema(complete))) = complete.body() else {
+        panic!("expected `Job` response body; got `{:?}`", complete.body());
+    };
+    assert_eq!(complete.name(), "Job");
+    assert_eq!(pending.status(), 202);
+    let Some(ResponseView::Json(TypeView::Schema(pending))) = pending.body() else {
+        panic!(
+            "expected `PendingJob` response body; got `{:?}`",
+            pending.body(),
+        );
+    };
+    assert_eq!(pending.name(), "PendingJob");
+}
+
+#[test]
+fn test_operation_response_inline_paths_include_status_when_needed() {
+    let doc = Document::from_yaml(indoc::indoc! {"
+        openapi: 3.0.0
+        info:
+          title: Test
+          version: 1.0
+        paths:
+          /jobs:
+            post:
+              operationId: startJob
+              responses:
+                '200':
+                  description: Complete
+                  content:
+                    application/json:
+                      schema:
+                        type: object
+                        properties:
+                          id:
+                            type: string
+                '202':
+                  description: Accepted
+                  content:
+                    application/json:
+                      schema:
+                        type: object
+                        properties:
+                          token:
+                            type: string
+    "})
+    .unwrap();
+
+    let arena = Arena::new();
+    let spec = Spec::from_doc(&arena, &doc).unwrap();
+    let graph = RawGraph::new(&arena, &spec).cook();
+
+    let operation = graph.operations().next().unwrap();
+    let mut statuses = operation
+        .inlines()
+        .filter_map(|inline| match inline {
+            InlineTypeView::Struct(_, _) if inline.path().segments().next().is_none() => {
+                match inline.path().root() {
+                    InlineTypePathRoot::Operation {
+                        usage: OperationUsage::Response { status },
+                        ..
+                    } => status,
+                    _ => None,
+                }
+            }
+            _ => None,
+        })
+        .collect_vec();
+    statuses.sort();
+    assert_matches!(&*statuses, [200, 202]);
 }
 
 // MARK: Parameter views

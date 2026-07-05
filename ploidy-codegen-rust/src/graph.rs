@@ -476,7 +476,26 @@ fn inline_type_candidate_name<'a>(
                     write!(full, "Query{}", CodegenIdentUsage::Type(ident).display()).unwrap();
                 }
                 OperationUsage::Request => full.push_str("Request"),
-                OperationUsage::Response => full.push_str("Response"),
+                OperationUsage::Response { status } => {
+                    full.push_str("Response");
+                    if let Some(status) = status {
+                        match status {
+                            200 => full.push_str("Ok"),
+                            201 => full.push_str("Created"),
+                            202 => full.push_str("Accepted"),
+                            203 => full.push_str("NonAuthoritativeInformation"),
+                            204 => full.push_str("NoContent"),
+                            205 => full.push_str("ResetContent"),
+                            206 => full.push_str("PartialContent"),
+                            207 => full.push_str("MultiStatus"),
+                            208 => full.push_str("AlreadyReported"),
+                            226 => full.push_str("ImUsed"),
+                            _ => {
+                                write!(full, "Status{status}").unwrap();
+                            }
+                        }
+                    }
+                }
             }
             full.push_str(&name);
 

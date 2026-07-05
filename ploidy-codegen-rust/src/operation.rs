@@ -1,6 +1,6 @@
 use itertools::Itertools;
 use ploidy_core::{
-    ir::{OperationView, RequestView, ResponseView},
+    ir::{HasTypeId, OperationView, RequestView, ResponseView, TypeId, TypeView},
     parse::{
         Method,
         path::{PathFragment, PathRun},
@@ -168,17 +168,45 @@ impl ToTokens for CodegenOperation<'_> {
             }
         }
 
-        let return_type = match self.op.response() {
-            Some(response) => match response {
-                ResponseView::Json(view) => CodegenRef::new(self.graph, &view).into_token_stream(),
-            },
-            None => quote! { () },
+        let mut response_shapes: Vec<Option<TypeId>> = vec![];
+        for case in self.op.response_cases() {
+            let shape = case.body().map(|body| match body {
+                ResponseView::Json(view) => match view {
+                    TypeView::Schema(view) => view.id(),
+                    TypeView::Inline(view) => view.id(),
+                },
+            });
+            if !response_shapes.contains(&shape) {
+                response_shapes.push(shape);
+            }
+        }
+
+        let return_type = if response_shapes.len() > 1 {
+            let type_name = format_ident!(
+                "{}Result",
+                CodegenIdentUsage::Type(self.graph.ident(self.op.id()))
+            );
+            quote! { crate::types::#type_name }
+        } else {
+            match self.op.response() {
+                Some(response) => match response {
+                    ResponseView::Json(view) => {
+                        CodegenRef::new(self.graph, &view).into_token_stream()
+                    }
+                },
+                None => quote! { () },
+            }
         };
 
         let url = self.url();
 
         let request = {
             let method = CodegenMethod(self.op.method());
+            let status = (response_shapes.len() > 1).then(|| {
+                quote! {
+                    let status = response.status();
+                }
+            });
             let builder = match self.op.request() {
                 Some(RequestView::Json(_)) => quote! {
                     let request = self.client
@@ -209,6 +237,7 @@ impl ToTokens for CodegenOperation<'_> {
                     request
                 };
                 let response = request.send().await?;
+                #status
                 #[cfg(feature = "tracing")]
                 {
                     ::tracing::record_all!(::tracing::Span::current(),
@@ -219,7 +248,50 @@ impl ToTokens for CodegenOperation<'_> {
             }
         };
 
-        let response = if self.op.response().is_some() {
+        let response = if response_shapes.len() > 1 {
+            let type_name = format_ident!(
+                "{}Result",
+                CodegenIdentUsage::Type(self.graph.ident(self.op.id()))
+            );
+            let arms = self.op.response_cases().map(|case| {
+                let status = case.status();
+                let variant_name = format_ident!(
+                    "{}",
+                    match status {
+                        200 => "Ok".to_owned(),
+                        201 => "Created".to_owned(),
+                        202 => "Accepted".to_owned(),
+                        203 => "NonAuthoritativeInformation".to_owned(),
+                        204 => "NoContent".to_owned(),
+                        205 => "ResetContent".to_owned(),
+                        206 => "PartialContent".to_owned(),
+                        207 => "MultiStatus".to_owned(),
+                        208 => "AlreadyReported".to_owned(),
+                        226 => "ImUsed".to_owned(),
+                        _ => format!("Status{status}"),
+                    }
+                );
+                match case.body() {
+                    Some(ResponseView::Json(_)) => quote! {
+                        #status => {
+                            let body = response.bytes().await?;
+                            let deserializer = &mut ::ploidy_util::serde_json::Deserializer::from_slice(&body);
+                            let result = ::ploidy_util::serde_path_to_error::deserialize(deserializer)?;
+                            Ok(crate::types::#type_name::#variant_name(result))
+                        }
+                    },
+                    None => quote! {
+                        #status => Ok(crate::types::#type_name::#variant_name),
+                    },
+                }
+            });
+            quote! {
+                match status.as_u16() {
+                    #(#arms)*
+                    _ => Err(crate::error::Error::Status(status)),
+                }
+            }
+        } else if self.op.response().is_some() {
             quote! {
                 let body = response.bytes().await?;
                 let deserializer = &mut ::ploidy_util::serde_json::Deserializer::from_slice(&body);
@@ -950,6 +1022,96 @@ mod tests {
             }
         };
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_operation_with_distinct_success_responses_matches_status() {
+        let doc = Document::from_yaml(indoc::indoc! {"
+            openapi: 3.0.0
+            info:
+              title: Test API
+              version: 1.0.0
+            paths:
+              /jobs:
+                post:
+                  operationId: startJob
+                  responses:
+                    '200':
+                      description: Complete
+                      content:
+                        application/json:
+                          schema:
+                            $ref: '#/components/schemas/Job'
+                    '202':
+                      description: Accepted
+                      content:
+                        application/json:
+                          schema:
+                            $ref: '#/components/schemas/PendingJob'
+            components:
+              schemas:
+                Job:
+                  type: object
+                PendingJob:
+                  type: object
+        "})
+        .unwrap();
+
+        let arena = Arena::new();
+        let spec = Spec::from_doc(&arena, &doc).unwrap();
+        let graph = CodegenGraph::new(RawGraph::new(&arena, &spec).cook());
+
+        let op = graph.operations().next().unwrap();
+        let codegen = CodegenOperation::new(&graph, &op);
+
+        let actual: syn::ImplItemFn = parse_quote!(#codegen);
+        let expected_return: syn::ReturnType =
+            parse_quote!(-> Result<crate::types::StartJobResult, crate::error::Error>);
+        assert_eq!(actual.sig.output, expected_return);
+
+        let syn::Stmt::Local(result) = &actual.block.stmts[0] else {
+            panic!("expected result local; got `{actual:?}`");
+        };
+        let Some(init) = &result.init else {
+            panic!("expected result initializer; got `{result:?}`");
+        };
+        let syn::Expr::Await(await_) = &*init.expr else {
+            panic!("expected awaited async block; got `{init:?}`");
+        };
+        let syn::Expr::Async(async_) = &*await_.base else {
+            panic!("expected async block; got `{await_:?}`");
+        };
+        let Some(syn::Stmt::Expr(syn::Expr::Match(match_), None)) = async_.block.stmts.last()
+        else {
+            panic!("expected status match; got `{async_:?}`");
+        };
+        let expected_match_expr: syn::Expr = parse_quote!(status.as_u16());
+        assert_eq!(*match_.expr, expected_match_expr);
+
+        let expected_200_pat: syn::Pat = parse_quote!(200u16);
+        let expected_202_pat: syn::Pat = parse_quote!(202u16);
+        let expected_fallback_pat: syn::Pat = parse_quote!(_);
+        assert_eq!(match_.arms[0].pat, expected_200_pat);
+        assert_eq!(match_.arms[1].pat, expected_202_pat);
+        assert_eq!(match_.arms[2].pat, expected_fallback_pat);
+
+        let expected_200_body: syn::Expr = parse_quote!({
+            let body = response.bytes().await?;
+            let deserializer = &mut ::ploidy_util::serde_json::Deserializer::from_slice(&body);
+            let result = ::ploidy_util::serde_path_to_error::deserialize(deserializer)?;
+            Ok(crate::types::StartJobResult::Ok(result))
+        });
+        let expected_202_body: syn::Expr = parse_quote!({
+            let body = response.bytes().await?;
+            let deserializer = &mut ::ploidy_util::serde_json::Deserializer::from_slice(&body);
+            let result = ::ploidy_util::serde_path_to_error::deserialize(deserializer)?;
+            Ok(crate::types::StartJobResult::Accepted(result))
+        });
+        let expected_fallback_body: syn::Expr =
+            parse_quote!(Err(crate::error::Error::Status(status)));
+        assert_eq!(*match_.arms[0].body, expected_200_body);
+        assert_eq!(*match_.arms[1].body, expected_202_body);
+        assert_eq!(*match_.arms[2].body, expected_fallback_body);
     }
 
     // MARK: Synthesized path params

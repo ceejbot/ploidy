@@ -19,7 +19,7 @@ use super::{
     types::{
         InlineTypeIds, ParameterStyle as IrParameterStyle, SchemaTypeInfo, SpecInlineType,
         SpecOperation, SpecParameter, SpecParameterInfo, SpecRequest, SpecResponse, SpecSchemaType,
-        SpecType,
+        SpecType, shape::ResponseCase,
     },
 };
 
@@ -248,60 +248,70 @@ impl<'a> Spec<'a> {
                         }
                     });
 
-                let response = {
+                let responses = {
                     let mut statuses = item
                         .op
                         .responses
                         .keys()
                         .filter_map(|status| Some((status.as_str(), status.parse::<u16>().ok()?)))
+                        .filter(|&(_, status)| matches!(status, 200..300))
                         .collect_vec();
                     statuses.sort_unstable_by_key(|&(_, code)| code);
-                    let key = statuses
-                        .iter()
-                        .find(|&(_, code)| matches!(code, 200..300))
-                        .map(|&(key, _)| key)
-                        .unwrap_or("default");
 
-                    item.op
-                        .responses
-                        .get(key)
-                        .and_then(|response_or_ref| {
+                    if statuses.is_empty() {
+                        statuses.extend(
+                            item.op
+                                .responses
+                                .contains_key("default")
+                                .then_some(("default", 200)),
+                        );
+                    }
+
+                    let responses = statuses
+                        .into_iter()
+                        .filter_map(|(key, status)| {
+                            let response_or_ref = item.op.responses.get(key)?;
                             let response = match response_or_ref {
                                 RefOrResponse::Other(r) => r,
                                 RefOrResponse::Ref(r) => {
                                     r.ref_.pointer().follow::<&Response>(doc).ok()?
                                 }
                             };
-                            response.content.as_ref()
+                            let body = response
+                                .content
+                                .as_ref()
+                                .map(|content| {
+                                    if let Some(content) = content.get("application/json")
+                                        && let Some(schema) = &content.schema
+                                    {
+                                        ResponseContent::Json(schema)
+                                    } else if let Some(content) = content.get("*/*")
+                                        && let Some(schema) = &content.schema
+                                    {
+                                        ResponseContent::Json(schema)
+                                    } else {
+                                        ResponseContent::Any
+                                    }
+                                })
+                                .map(|content| match content {
+                                    ResponseContent::Json(RefOrSchema::Ref(r)) => {
+                                        SpecResponse::Json(arena.alloc(SpecType::Ref(r)))
+                                    }
+                                    ResponseContent::Json(RefOrSchema::Inline(schema)) => {
+                                        SpecResponse::Json(arena.alloc(transform_with_context(
+                                            &context,
+                                            ids.next(),
+                                            schema,
+                                        )))
+                                    }
+                                    ResponseContent::Any => SpecResponse::Json(
+                                        arena.alloc(SpecInlineType::Any(ids.next()).into()),
+                                    ),
+                                });
+                            Some(ResponseCase { status, body })
                         })
-                        .map(|content| {
-                            if let Some(content) = content.get("application/json")
-                                && let Some(schema) = &content.schema
-                            {
-                                ResponseContent::Json(schema)
-                            } else if let Some(content) = content.get("*/*")
-                                && let Some(schema) = &content.schema
-                            {
-                                ResponseContent::Json(schema)
-                            } else {
-                                ResponseContent::Any
-                            }
-                        })
-                        .map(|content| match content {
-                            ResponseContent::Json(RefOrSchema::Ref(r)) => {
-                                SpecResponse::Json(arena.alloc(SpecType::Ref(r)))
-                            }
-                            ResponseContent::Json(RefOrSchema::Inline(schema)) => {
-                                SpecResponse::Json(arena.alloc(transform_with_context(
-                                    &context,
-                                    ids.next(),
-                                    schema,
-                                )))
-                            }
-                            ResponseContent::Any => SpecResponse::Json(
-                                arena.alloc(SpecInlineType::Any(ids.next()).into()),
-                            ),
-                        })
+                        .collect_vec();
+                    arena.alloc_slice_copy(&responses)
                 };
 
                 Ok(SpecOperation {
@@ -312,7 +322,7 @@ impl<'a> Spec<'a> {
                     description: item.op.description.as_deref(),
                     params,
                     request,
-                    response,
+                    responses,
                 })
             })
             .flatten_ok()

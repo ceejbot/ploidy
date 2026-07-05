@@ -1,5 +1,5 @@
 use itertools::Itertools;
-use ploidy_core::ir::{HasTypeId, InlineTypeView};
+use ploidy_core::ir::{HasTypeId, InlineTypeView, OperationView, View};
 use proc_macro2::TokenStream;
 use quote::{ToTokens, TokenStreamExt, quote};
 
@@ -8,7 +8,7 @@ use super::{
     struct_::CodegenStruct, tagged::CodegenTagged, untagged::CodegenUntagged,
 };
 
-/// Generates a `mod types` for inline structs, enums, and unions.
+/// Generates a `mod types` for operation-local types.
 #[derive(Debug)]
 pub struct CodegenInlines<'a> {
     graph: &'a CodegenGraph<'a>,
@@ -30,6 +30,7 @@ impl<'a> CodegenInlines<'a> {
     }
 
     /// Creates a codegen node for a resource module's inline types.
+    #[cfg(test)]
     pub fn for_resource_inlines(
         graph: &'a CodegenGraph<'a>,
         inlines: Vec<InlineTypeView<'a, 'a>>,
@@ -37,6 +38,18 @@ impl<'a> CodegenInlines<'a> {
         Self {
             graph,
             inlines,
+            cfg: true,
+        }
+    }
+
+    /// Creates a codegen node for a resource module's `types` submodule.
+    pub fn for_resource_types(
+        graph: &'a CodegenGraph<'a>,
+        ops: &'a [OperationView<'a, 'a>],
+    ) -> Self {
+        Self {
+            graph,
+            inlines: ops.iter().flat_map(|op| op.inlines()).collect(),
             cfg: true,
         }
     }

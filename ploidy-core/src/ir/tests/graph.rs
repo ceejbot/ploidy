@@ -1079,6 +1079,53 @@ fn test_dependencies_propagation() {
     assert_eq!(other_used_by, ["getData"]);
 }
 
+#[test]
+fn test_operation_dependencies_include_all_successful_responses() {
+    let doc = Document::from_yaml(indoc::indoc! {"
+        openapi: 3.0.0
+        info:
+          title: Test API
+          version: 1.0
+        paths:
+          /jobs:
+            post:
+              operationId: startJob
+              responses:
+                '200':
+                  description: Complete
+                  content:
+                    application/json:
+                      schema:
+                        $ref: '#/components/schemas/Job'
+                '202':
+                  description: Accepted
+                  content:
+                    application/json:
+                      schema:
+                        $ref: '#/components/schemas/PendingJob'
+        components:
+          schemas:
+            Job:
+              type: object
+            PendingJob:
+              type: object
+    "})
+    .unwrap();
+
+    let arena = Arena::new();
+    let spec = Spec::from_doc(&arena, &doc).unwrap();
+    let graph = RawGraph::new(&arena, &spec).cook();
+
+    let operation = graph.operations().next().unwrap();
+    let mut deps = operation
+        .dependencies()
+        .filter_map(|v| v.into_schema().right())
+        .map(|schema| schema.name())
+        .collect_vec();
+    deps.sort();
+    assert_matches!(&*deps, ["Job", "PendingJob"]);
+}
+
 // MARK: Backward propagation
 
 #[test]

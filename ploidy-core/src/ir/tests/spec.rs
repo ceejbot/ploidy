@@ -8,7 +8,7 @@ use crate::{
         spec::Spec,
         types::{
             ParameterStyle, PrimitiveType, SpecInlineType, SpecOperation, SpecParameter,
-            SpecParameterInfo, SpecRequest, SpecResponse, SpecType,
+            SpecParameterInfo, SpecRequest, SpecResponse, SpecType, shape::ResponseCase,
         },
     },
     parse::{Document, Method, path::ParsedPath},
@@ -850,7 +850,10 @@ fn test_parses_response_json_reference() {
     assert_matches!(
         &*ir.operations,
         [SpecOperation {
-            response: Some(SpecResponse::Json(_)),
+            responses: [ResponseCase {
+                status: 200,
+                body: Some(SpecResponse::Json(_)),
+            }],
             ..
         }],
     );
@@ -886,7 +889,10 @@ fn test_parses_response_json_inline_schema() {
     assert_matches!(
         &*ir.operations,
         [SpecOperation {
-            response: Some(SpecResponse::Json(_)),
+            responses: [ResponseCase {
+                status: 200,
+                body: Some(SpecResponse::Json(_)),
+            }],
             ..
         }],
     );
@@ -938,7 +944,10 @@ fn test_prioritizes_2xx_status_over_default_response() {
     assert_matches!(
         &*ir.operations,
         [SpecOperation {
-            response: Some(SpecResponse::Json(SpecType::Ref(component_ref))),
+            responses: [ResponseCase {
+                status: 200,
+                body: Some(SpecResponse::Json(SpecType::Ref(component_ref))),
+            }],
             ..
         }] if component_ref.name() == "User",
     );
@@ -974,7 +983,10 @@ fn test_falls_back_to_default_response_when_no_2xx_status() {
     assert_matches!(
         &*ir.operations,
         [SpecOperation {
-            response: Some(_),
+            responses: [ResponseCase {
+                status: 200,
+                body: Some(_),
+            }],
             ..
         }],
     );
@@ -1007,14 +1019,17 @@ fn test_parses_response_with_wildcard_content_type() {
     assert_matches!(
         &*ir.operations,
         [SpecOperation {
-            response: Some(SpecResponse::Json(_)),
+            responses: [ResponseCase {
+                status: 200,
+                body: Some(SpecResponse::Json(_)),
+            }],
             ..
         }],
     );
 }
 
 #[test]
-fn test_selects_first_2xx_status_when_multiple_exist() {
+fn test_preserves_multiple_2xx_responses() {
     let doc = Document::from_yaml(indoc::indoc! {"
         openapi: 3.0.0
         info:
@@ -1057,13 +1072,21 @@ fn test_selects_first_2xx_status_when_multiple_exist() {
     let arena = Arena::new();
     let ir = Spec::from_doc(&arena, &doc).unwrap();
 
-    // The response should be from the first 2xx status (200), not 202.
     assert_matches!(
         &*ir.operations,
         [SpecOperation {
-            response: Some(SpecResponse::Json(SpecType::Ref(component_ref))),
+            responses: [
+                ResponseCase {
+                    status: 200,
+                    body: Some(SpecResponse::Json(SpecType::Ref(first))),
+                },
+                ResponseCase {
+                    status: 202,
+                    body: Some(SpecResponse::Json(SpecType::Ref(second))),
+                },
+            ],
             ..
-        }] if component_ref.name() == "UserList",
+        }] if first.name() == "UserList" && second.name() == "AcceptedResponse",
     );
 }
 
@@ -1085,7 +1108,7 @@ fn test_operation_without_response() {
     let arena = Arena::new();
     let ir = Spec::from_doc(&arena, &doc).unwrap();
 
-    assert_matches!(&*ir.operations, [SpecOperation { response: None, .. }]);
+    assert_matches!(&*ir.operations, [SpecOperation { responses: [], .. }]);
 }
 
 // MARK: `x-resource-name` extension
@@ -1368,7 +1391,7 @@ fn test_operation_with_all_components() {
             resource: Some("users"),
             description: Some("Update an existing user"),
             request: Some(_),
-            response: Some(_),
+            responses: [_],
             params: [_, _],
             ..
         }],
