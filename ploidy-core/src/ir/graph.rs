@@ -161,6 +161,11 @@ impl<'a> RawGraph<'a> {
                         SpecType::Inline(i) => indices[&ResolvedSpecType::Inline(i)],
                         SpecType::Ref(r) => schemas[&*r.name()],
                     }),
+                    Response::Headers(ty) => Response::Headers(match ty {
+                        SpecType::Schema(s) => indices[&ResolvedSpecType::Schema(s)],
+                        SpecType::Inline(i) => indices[&ResolvedSpecType::Inline(i)],
+                        SpecType::Ref(r) => schemas[&*r.name()],
+                    }),
                 }),
             }));
 
@@ -528,6 +533,10 @@ impl<'a> RawGraph<'a> {
                                     let &ty = collapsed_to.get(&ty)?;
                                     Some(Response::Json(ty))
                                 }
+                                Response::Headers(ty) => {
+                                    let &ty = collapsed_to.get(&ty)?;
+                                    Some(Response::Headers(ty))
+                                }
                             })
                             .or(response.body),
                     })
@@ -844,6 +853,7 @@ impl<'a> CookedGraph<'a> {
                         status: response.status,
                         body: response.body.as_ref().map(|r| match r {
                             Response::Json(ty) => Response::Json(indices[ty]),
+                            Response::Headers(ty) => Response::Headers(indices[ty]),
                         }),
                     })),
             })
@@ -1270,7 +1280,7 @@ impl<'graph, 'a> MetadataBuilder<'graph, 'a> {
                 .filter(|response| response.body.is_some())
                 .count();
             for response in op.responses {
-                if let Some(Response::Json(index)) = response.body
+                if let Some(Response::Json(index) | Response::Headers(index)) = response.body
                     && matches!(self.graph[index], GraphType::Inline(_))
                     && bfs.discover(index)
                 {

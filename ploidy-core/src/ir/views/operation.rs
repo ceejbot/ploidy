@@ -39,7 +39,8 @@
 //! * [Query parameters], each with a name, type, and
 //!   optional serialization style.
 //! * An optional [request] body and successful [response cases], wrapping
-//!   [`TypeView`]s of body schemas when present.
+//!   [`TypeView`]s of body schemas when present. A case that documents
+//!   headers but no body wraps a struct synthesized from its headers.
 //! * An optional [resource name] from the `x-resource-name` extension,
 //!   used to group operations by resource.
 //!
@@ -401,10 +402,14 @@ pub enum RequestView<'graph, 'a> {
     Multipart,
 }
 
-/// A graph-aware view of an operation's response body.
+/// A graph-aware view of an operation's response payload.
 #[derive(Debug)]
 pub enum ResponseView<'graph, 'a> {
+    /// A JSON body.
     Json(TypeView<'graph, 'a>),
+    /// A struct decoded from response headers, for cases that document
+    /// headers but no body.
+    Headers(TypeView<'graph, 'a>),
 }
 
 /// A graph-aware view of an operation response case.
@@ -435,11 +440,14 @@ impl<'graph, 'a> ResponseCaseView<'graph, 'a> {
         self.status
     }
 
-    /// Returns the response body, if present.
+    /// Returns the response payload, if present.
     #[inline]
     pub fn body(&self) -> Option<ResponseView<'graph, 'a>> {
         self.body.map(|ty| match ty {
             GraphResponse::Json(index) => ResponseView::Json(TypeView::new(self.cooked, index)),
+            GraphResponse::Headers(index) => {
+                ResponseView::Headers(TypeView::new(self.cooked, index))
+            }
         })
     }
 }

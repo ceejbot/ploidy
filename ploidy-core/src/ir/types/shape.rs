@@ -32,7 +32,7 @@ impl<'a, Ty> Operation<'a, Ty> {
             }),
             self.responses.iter().filter_map(|response| {
                 response.body.as_ref().map(|body| match body {
-                    Response::Json(ty) => ty,
+                    Response::Json(ty) | Response::Headers(ty) => ty,
                 })
             })
         )
@@ -43,13 +43,17 @@ impl<'a, Ty> Operation<'a, Ty> {
 pub struct ResponseCase<Ty> {
     /// The numeric HTTP status code for this successful response.
     pub status: u16,
-    /// The response body, if this status documents one.
+    /// The response payload, if this status documents a body or headers.
     pub body: Option<Response<Ty>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum Response<Ty> {
+    /// A JSON body.
     Json(Ty),
+    /// A struct decoded from response headers, for cases that document
+    /// headers but no body.
+    Headers(Ty),
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]

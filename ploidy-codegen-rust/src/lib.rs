@@ -63,7 +63,7 @@ pub fn write_types_to_disk(
         let mut shapes: Vec<Option<TypeId>> = vec![];
         for case in op.response_cases() {
             let shape = case.body().map(|body| match body {
-                ResponseView::Json(view) => match view {
+                ResponseView::Json(view) | ResponseView::Headers(view) => match view {
                     TypeView::Schema(view) => view.id(),
                     TypeView::Inline(view) => view.id(),
                 },

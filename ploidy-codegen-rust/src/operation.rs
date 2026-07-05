@@ -1,6 +1,9 @@
 use itertools::Itertools;
 use ploidy_core::{
-    ir::{HasTypeId, OperationView, RequestView, ResponseView, TypeId, TypeView},
+    ir::{
+        HasTypeId, InlineTypeView, OperationView, RequestView, Required, ResponseView,
+        SchemaTypeView, StructFieldName, TypeId, TypeView,
+    },
     parse::{
         Method,
         path::{PathFragment, PathRun},
@@ -13,7 +16,7 @@ use syn::Ident;
 use super::{
     doc_attrs,
     graph::{CodegenGraph, IdentMapping},
-    naming::CodegenIdentUsage,
+    naming::{CodegenIdentUsage, status_variant_name},
     ref_::CodegenRef,
 };
 
@@ -171,7 +174,7 @@ impl ToTokens for CodegenOperation<'_> {
         let mut response_shapes: Vec<Option<TypeId>> = vec![];
         for case in self.op.response_cases() {
             let shape = case.body().map(|body| match body {
-                ResponseView::Json(view) => match view {
+                ResponseView::Json(view) | ResponseView::Headers(view) => match view {
                     TypeView::Schema(view) => view.id(),
                     TypeView::Inline(view) => view.id(),
                 },
@@ -190,7 +193,7 @@ impl ToTokens for CodegenOperation<'_> {
         } else {
             match self.op.response() {
                 Some(response) => match response {
-                    ResponseView::Json(view) => {
+                    ResponseView::Json(view) | ResponseView::Headers(view) => {
                         CodegenRef::new(self.graph, &view).into_token_stream()
                     }
                 },
@@ -255,22 +258,7 @@ impl ToTokens for CodegenOperation<'_> {
             );
             let arms = self.op.response_cases().map(|case| {
                 let status = case.status();
-                let variant_name = format_ident!(
-                    "{}",
-                    match status {
-                        200 => "Ok".to_owned(),
-                        201 => "Created".to_owned(),
-                        202 => "Accepted".to_owned(),
-                        203 => "NonAuthoritativeInformation".to_owned(),
-                        204 => "NoContent".to_owned(),
-                        205 => "ResetContent".to_owned(),
-                        206 => "PartialContent".to_owned(),
-                        207 => "MultiStatus".to_owned(),
-                        208 => "AlreadyReported".to_owned(),
-                        226 => "ImUsed".to_owned(),
-                        _ => format!("Status{status}"),
-                    }
-                );
+                let variant_name = format_ident!("{}", status_variant_name(status));
                 match case.body() {
                     Some(ResponseView::Json(_)) => quote! {
                         #status => {
@@ -280,6 +268,16 @@ impl ToTokens for CodegenOperation<'_> {
                             Ok(crate::types::#type_name::#variant_name(result))
                         }
                     },
+                    Some(ResponseView::Headers(view)) => {
+                        let ty = CodegenRef::new(self.graph, &view);
+                        let fields = CodegenHeaderFields::new(self.graph, &view);
+                        quote! {
+                            #status => {
+                                let headers = response.headers();
+                                Ok(crate::types::#type_name::#variant_name(#ty { #fields }))
+                            }
+                        }
+                    }
                     None => quote! {
                         #status => Ok(crate::types::#type_name::#variant_name),
                     },
@@ -291,17 +289,29 @@ impl ToTokens for CodegenOperation<'_> {
                     _ => Err(crate::error::Error::Status(status)),
                 }
             }
-        } else if self.op.response().is_some() {
-            quote! {
-                let body = response.bytes().await?;
-                let deserializer = &mut ::ploidy_util::serde_json::Deserializer::from_slice(&body);
-                let result = ::ploidy_util::serde_path_to_error::deserialize(deserializer)?;
-                Ok(result)
-            }
         } else {
-            quote! {
-                let _ = response;
-                Ok(())
+            match self.op.response() {
+                Some(ResponseView::Json(_)) => quote! {
+                    let body = response.bytes().await?;
+                    let deserializer = &mut ::ploidy_util::serde_json::Deserializer::from_slice(&body);
+                    let result = ::ploidy_util::serde_path_to_error::deserialize(deserializer)?;
+                    Ok(result)
+                },
+                // Like the JSON path, decode without checking the status:
+                // a response with an unexpected status surfaces as a
+                // missing-header error.
+                Some(ResponseView::Headers(view)) => {
+                    let ty = CodegenRef::new(self.graph, &view);
+                    let fields = CodegenHeaderFields::new(self.graph, &view);
+                    quote! {
+                        let headers = response.headers();
+                        Ok(#ty { #fields })
+                    }
+                }
+                None => quote! {
+                    let _ = response;
+                    Ok(())
+                },
             }
         };
 
@@ -371,6 +381,66 @@ impl ToTokens for CodegenOperation<'_> {
                 result
             }
         });
+    }
+}
+
+/// Generates the field initializers that decode a headers response struct
+/// from an in-scope `headers` binding holding the response's header map.
+#[derive(Clone, Copy, Debug)]
+struct CodegenHeaderFields<'a> {
+    graph: &'a CodegenGraph<'a>,
+    ty: &'a TypeView<'a, 'a>,
+}
+
+impl<'a> CodegenHeaderFields<'a> {
+    fn new(graph: &'a CodegenGraph<'a>, ty: &'a TypeView<'a, 'a>) -> Self {
+        Self { graph, ty }
+    }
+}
+
+impl ToTokens for CodegenHeaderFields<'_> {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        let view = match self.ty {
+            TypeView::Inline(InlineTypeView::Struct(_, view)) => view,
+            TypeView::Schema(SchemaTypeView::Struct(_, view)) => view,
+            ty => panic!("expected a struct for a headers response; got `{ty:?}`"),
+        };
+        let fields = view.fields().map(|field| {
+            let ident = CodegenIdentUsage::Field(
+                self.graph
+                    .ident(IdentMapping::StructField(view.id(), field.name())),
+            );
+            let StructFieldName::Name(header) = field.name() else {
+                panic!("expected a named header field; got `{:?}`", field.name());
+            };
+            match field.required() {
+                Required::Required { nullable: false } => quote! {
+                    #ident: headers
+                        .get(#header)
+                        .ok_or_else(|| crate::error::Error::missing_header(#header))?
+                        .to_str()
+                        .map_err(|_| crate::error::Error::invalid_header(#header))?
+                        .to_owned()
+                },
+                Required::Required { nullable: true } => quote! {
+                    #ident: match headers.get(#header) {
+                        ::std::option::Option::Some(value) => ::std::option::Option::Some(
+                            value
+                                .to_str()
+                                .map_err(|_| crate::error::Error::invalid_header(#header))?
+                                .to_owned(),
+                        ),
+                        ::std::option::Option::None => ::std::option::Option::None,
+                    }
+                },
+                // `Spec::from_doc` only synthesizes required or nullable
+                // header fields.
+                Required::Optional => {
+                    panic!("expected a required or nullable header field; got `{field:?}`")
+                }
+            }
+        });
+        tokens.append_all(quote! { #(#fields),* });
     }
 }
 
@@ -1112,6 +1182,215 @@ mod tests {
         assert_eq!(*match_.arms[0].body, expected_200_body);
         assert_eq!(*match_.arms[1].body, expected_202_body);
         assert_eq!(*match_.arms[2].body, expected_fallback_body);
+    }
+
+    // MARK: Header-only responses
+
+    #[test]
+    fn test_operation_with_header_only_response_returns_header_struct() {
+        let doc = Document::from_yaml(indoc::indoc! {"
+            openapi: 3.0.0
+            info:
+              title: Test API
+              version: 1.0.0
+            paths:
+              /archives:
+                get:
+                  operationId: getArchive
+                  responses:
+                    '307':
+                      description: Redirect to the archive URL.
+                      headers:
+                        location:
+                          required: true
+                          schema:
+                            type: string
+        "})
+        .unwrap();
+
+        let arena = Arena::new();
+        let spec = Spec::from_doc(&arena, &doc).unwrap();
+        let graph = CodegenGraph::new(RawGraph::new(&arena, &spec).cook());
+
+        let op = graph.operations().next().unwrap();
+        let codegen = CodegenOperation::new(&graph, &op);
+
+        let actual: syn::ImplItemFn = parse_quote!(#codegen);
+        let expected_return: syn::ReturnType = parse_quote!(
+            -> Result<crate::client::default::types::GetArchiveResponse, crate::error::Error>
+        );
+        assert_eq!(actual.sig.output, expected_return);
+
+        let syn::Stmt::Local(result) = &actual.block.stmts[0] else {
+            panic!("expected result local; got `{actual:?}`");
+        };
+        let Some(init) = &result.init else {
+            panic!("expected result initializer; got `{result:?}`");
+        };
+        let syn::Expr::Await(await_) = &*init.expr else {
+            panic!("expected awaited async block; got `{init:?}`");
+        };
+        let syn::Expr::Async(async_) = &*await_.base else {
+            panic!("expected async block; got `{await_:?}`");
+        };
+        let stmts = &async_.block.stmts;
+        let expected_headers: syn::Stmt = parse_quote!(let headers = response.headers(););
+        assert_eq!(stmts[stmts.len() - 2], expected_headers);
+        let Some(syn::Stmt::Expr(decode, None)) = stmts.last() else {
+            panic!("expected decode expression; got `{async_:?}`");
+        };
+        let expected_decode: syn::Expr = parse_quote! {
+            Ok(crate::client::default::types::GetArchiveResponse {
+                location: headers
+                    .get("location")
+                    .ok_or_else(|| crate::error::Error::missing_header("location"))?
+                    .to_str()
+                    .map_err(|_| crate::error::Error::invalid_header("location"))?
+                    .to_owned()
+            })
+        };
+        assert_eq!(*decode, expected_decode);
+    }
+
+    #[test]
+    fn test_operation_with_body_and_header_responses_matches_status() {
+        let doc = Document::from_yaml(indoc::indoc! {"
+            openapi: 3.0.0
+            info:
+              title: Test API
+              version: 1.0.0
+            paths:
+              /jobs:
+                get:
+                  operationId: getJob
+                  responses:
+                    '200':
+                      description: Complete
+                      content:
+                        application/json:
+                          schema:
+                            $ref: '#/components/schemas/Job'
+                    '304':
+                      description: Not modified.
+                      headers:
+                        etag:
+                          required: true
+                          schema:
+                            type: string
+            components:
+              schemas:
+                Job:
+                  type: object
+        "})
+        .unwrap();
+
+        let arena = Arena::new();
+        let spec = Spec::from_doc(&arena, &doc).unwrap();
+        let graph = CodegenGraph::new(RawGraph::new(&arena, &spec).cook());
+
+        let op = graph.operations().next().unwrap();
+        let codegen = CodegenOperation::new(&graph, &op);
+
+        let actual: syn::ImplItemFn = parse_quote!(#codegen);
+        let expected_return: syn::ReturnType =
+            parse_quote!(-> Result<crate::types::GetJobResult, crate::error::Error>);
+        assert_eq!(actual.sig.output, expected_return);
+
+        let syn::Stmt::Local(result) = &actual.block.stmts[0] else {
+            panic!("expected result local; got `{actual:?}`");
+        };
+        let Some(init) = &result.init else {
+            panic!("expected result initializer; got `{result:?}`");
+        };
+        let syn::Expr::Await(await_) = &*init.expr else {
+            panic!("expected awaited async block; got `{init:?}`");
+        };
+        let syn::Expr::Async(async_) = &*await_.base else {
+            panic!("expected async block; got `{await_:?}`");
+        };
+        let Some(syn::Stmt::Expr(syn::Expr::Match(match_), None)) = async_.block.stmts.last()
+        else {
+            panic!("expected status match; got `{async_:?}`");
+        };
+
+        let expected_304_pat: syn::Pat = parse_quote!(304u16);
+        assert_eq!(match_.arms[1].pat, expected_304_pat);
+        // Brace-delimited so rustfmt leaves the tokens alone; in the
+        // paren form it adds trailing commas, which change the AST.
+        let expected_304_body: syn::Expr = parse_quote! {{
+            let headers = response.headers();
+            Ok(crate::types::GetJobResult::NotModified(
+                crate::client::default::types::GetJobResponseNotModified {
+                    etag: headers
+                        .get("etag")
+                        .ok_or_else(|| crate::error::Error::missing_header("etag"))?
+                        .to_str()
+                        .map_err(|_| crate::error::Error::invalid_header("etag"))?
+                        .to_owned()
+                }
+            ))
+        }};
+        assert_eq!(*match_.arms[1].body, expected_304_body);
+    }
+
+    #[test]
+    fn test_operation_header_decode_handles_optional_and_hyphenated_headers() {
+        let doc = Document::from_yaml(indoc::indoc! {"
+            openapi: 3.0.0
+            info:
+              title: Test API
+              version: 1.0.0
+            paths:
+              /jobs:
+                get:
+                  operationId: getJob
+                  responses:
+                    '304':
+                      description: Not modified.
+                      headers:
+                        cache-control:
+                          schema:
+                            type: string
+        "})
+        .unwrap();
+
+        let arena = Arena::new();
+        let spec = Spec::from_doc(&arena, &doc).unwrap();
+        let graph = CodegenGraph::new(RawGraph::new(&arena, &spec).cook());
+
+        let op = graph.operations().next().unwrap();
+        let codegen = CodegenOperation::new(&graph, &op);
+
+        let actual: syn::ImplItemFn = parse_quote!(#codegen);
+        let syn::Stmt::Local(result) = &actual.block.stmts[0] else {
+            panic!("expected result local; got `{actual:?}`");
+        };
+        let Some(init) = &result.init else {
+            panic!("expected result initializer; got `{result:?}`");
+        };
+        let syn::Expr::Await(await_) = &*init.expr else {
+            panic!("expected awaited async block; got `{init:?}`");
+        };
+        let syn::Expr::Async(async_) = &*await_.base else {
+            panic!("expected async block; got `{await_:?}`");
+        };
+        let Some(syn::Stmt::Expr(decode, None)) = async_.block.stmts.last() else {
+            panic!("expected decode expression; got `{async_:?}`");
+        };
+        let expected_decode: syn::Expr = parse_quote! {
+            Ok(crate::client::default::types::GetJobResponse {
+                cache_control: match headers.get("cache-control") {
+                    ::std::option::Option::Some(value) => ::std::option::Option::Some(
+                        value
+                            .to_str()
+                            .map_err(|_| crate::error::Error::invalid_header("cache-control"))?
+                            .to_owned(),
+                    ),
+                    ::std::option::Option::None => ::std::option::Option::None,
+                }
+            })
+        };
+        assert_eq!(*decode, expected_decode);
     }
 
     // MARK: Synthesized path params

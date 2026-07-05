@@ -6,7 +6,12 @@ use ploidy_core::{
 use proc_macro2::TokenStream;
 use quote::{ToTokens, TokenStreamExt, format_ident, quote};
 
-use super::{cfg::CfgFeature, graph::CodegenGraph, naming::CodegenIdentUsage, ref_::CodegenRef};
+use super::{
+    cfg::CfgFeature,
+    graph::CodegenGraph,
+    naming::{CodegenIdentUsage, status_variant_name},
+    ref_::CodegenRef,
+};
 
 /// Generates the `types/mod.rs` module.
 pub struct CodegenTypesModule<'a> {
@@ -30,7 +35,7 @@ impl ToTokens for CodegenTypesModule<'_> {
                 let mut shapes: Vec<Option<TypeId>> = vec![];
                 for case in op.response_cases() {
                     let shape = case.body().map(|body| match body {
-                        ResponseView::Json(view) => match view {
+                        ResponseView::Json(view) | ResponseView::Headers(view) => match view {
                             TypeView::Schema(view) => view.id(),
                             TypeView::Inline(view) => view.id(),
                         },
@@ -127,24 +132,9 @@ impl ToTokens for CodegenOperationResult<'_> {
         );
         let variants = self.op.response_cases().map(|case| {
             let status = case.status();
-            let variant_name = format_ident!(
-                "{}",
-                match status {
-                    200 => "Ok".to_owned(),
-                    201 => "Created".to_owned(),
-                    202 => "Accepted".to_owned(),
-                    203 => "NonAuthoritativeInformation".to_owned(),
-                    204 => "NoContent".to_owned(),
-                    205 => "ResetContent".to_owned(),
-                    206 => "PartialContent".to_owned(),
-                    207 => "MultiStatus".to_owned(),
-                    208 => "AlreadyReported".to_owned(),
-                    226 => "ImUsed".to_owned(),
-                    _ => format!("Status{status}"),
-                }
-            );
+            let variant_name = format_ident!("{}", status_variant_name(status));
             match case.body() {
-                Some(ResponseView::Json(view)) => {
+                Some(ResponseView::Json(view) | ResponseView::Headers(view)) => {
                     let ty = CodegenRef::new(self.graph, &view);
                     quote! { #variant_name(#ty) }
                 }
@@ -287,6 +277,104 @@ mod tests {
             pub use job::Job;
             pub use pending_job::PendingJob;
             pub use start_job_result::StartJobResult;
+        };
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_operation_result_variant_for_header_only_response() {
+        let doc = Document::from_yaml(indoc::indoc! {"
+            openapi: 3.0.0
+            info:
+              title: Test API
+              version: 1.0.0
+            paths:
+              /jobs:
+                get:
+                  operationId: getJob
+                  responses:
+                    '200':
+                      description: Complete
+                      content:
+                        application/json:
+                          schema:
+                            $ref: '#/components/schemas/Job'
+                    '304':
+                      description: Not modified.
+                      headers:
+                        etag:
+                          required: true
+                          schema:
+                            type: string
+            components:
+              schemas:
+                Job:
+                  type: object
+        "})
+        .unwrap();
+
+        let arena = Arena::new();
+        let spec = Spec::from_doc(&arena, &doc).unwrap();
+        let graph = CodegenGraph::new(RawGraph::new(&arena, &spec).cook());
+
+        let op = graph.operations().next().unwrap();
+        let (path, tokens) = CodegenOperationResult::new(&graph, &op).into_code();
+
+        assert_eq!(path, "src/types/get_job_result.rs");
+        let actual: syn::File = parse_quote!(#tokens);
+        let expected: syn::File = parse_quote! {
+            #[derive(Clone, Debug, PartialEq)]
+            pub enum GetJobResult {
+                Ok(crate::types::Job),
+                NotModified(crate::client::default::types::GetJobResponseNotModified)
+            }
+        };
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_types_module_exports_result_for_body_and_header_shapes() {
+        let doc = Document::from_yaml(indoc::indoc! {"
+            openapi: 3.0.0
+            info:
+              title: Test API
+              version: 1.0.0
+            paths:
+              /jobs:
+                get:
+                  operationId: getJob
+                  responses:
+                    '200':
+                      description: Complete
+                      content:
+                        application/json:
+                          schema:
+                            $ref: '#/components/schemas/Job'
+                    '304':
+                      description: Not modified.
+                      headers:
+                        etag:
+                          required: true
+                          schema:
+                            type: string
+            components:
+              schemas:
+                Job:
+                  type: object
+        "})
+        .unwrap();
+
+        let arena = Arena::new();
+        let spec = Spec::from_doc(&arena, &doc).unwrap();
+        let graph = CodegenGraph::new(RawGraph::new(&arena, &spec).cook());
+
+        let codegen = CodegenTypesModule::new(&graph);
+        let actual: syn::File = parse_quote!(#codegen);
+        let expected: syn::File = parse_quote! {
+            pub mod job;
+            pub mod get_job_result;
+            pub use job::Job;
+            pub use get_job_result::GetJobResult;
         };
         assert_eq!(actual, expected);
     }

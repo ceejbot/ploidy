@@ -189,6 +189,61 @@ mod tests {
     }
 
     #[test]
+    fn test_resource_types_include_header_struct() {
+        let doc = Document::from_yaml(indoc::indoc! {"
+            openapi: 3.0.0
+            info:
+              title: Test API
+              version: 1.0.0
+            paths:
+              /jobs:
+                get:
+                  operationId: getJob
+                  responses:
+                    '304':
+                      description: Not modified.
+                      headers:
+                        etag:
+                          required: true
+                          schema:
+                            type: string
+                        cache-control:
+                          schema:
+                            type: string
+        "})
+        .unwrap();
+
+        let arena = Arena::new();
+        let spec = Spec::from_doc(&arena, &doc).unwrap();
+        let graph = CodegenGraph::new(RawGraph::new(&arena, &spec).cook());
+
+        let inlines = CodegenInlines::for_resource_inlines(
+            &graph,
+            graph.operations().flat_map(|op| op.inlines()).collect(),
+        );
+
+        let actual: syn::File = parse_quote!(#inlines);
+        let expected: syn::File = parse_quote! {
+            pub mod types {
+                mod get_job_response {
+                    #[doc = " Not modified."]
+                    #[derive(Debug, Clone, PartialEq, Eq, Hash, Default, ::ploidy_util::serde::Serialize, ::ploidy_util::serde::Deserialize, ::ploidy_util::pointer::JsonPointee, ::ploidy_util::pointer::JsonPointerTarget)]
+                    #[serde(crate = "::ploidy_util::serde")]
+                    #[ploidy(pointer(crate = "::ploidy_util::pointer"))]
+                    pub struct GetJobResponse {
+                        pub etag: ::std::string::String,
+                        #[serde(rename = "cache-control")]
+                        #[ploidy(pointer(rename = "cache-control"))]
+                        pub cache_control: ::std::option::Option<::std::string::String>,
+                    }
+                }
+                pub use get_job_response::*;
+            }
+        };
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
     fn test_operation_parameter_inline_type_names_do_not_collide_across_roles() {
         let doc = Document::from_yaml(indoc::indoc! {"
             openapi: 3.0.0

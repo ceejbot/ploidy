@@ -6,9 +6,9 @@ use crate::{
     arena::Arena,
     ir::OperationId,
     parse::{
-        self, Document, Info, Method, Operation, Parameter, ParameterLocation,
-        ParameterStyle as ParsedParameterStyle, RefOrParameter, RefOrRequestBody, RefOrResponse,
-        RefOrSchema, RequestBody, Response,
+        self, Document, Header, Info, Method, Operation, Parameter, ParameterLocation,
+        ParameterStyle as ParsedParameterStyle, RefOrHeader, RefOrParameter, RefOrRequestBody,
+        RefOrResponse, RefOrSchema, RequestBody, Response,
         path::{ParsedPath, PathFragment, PathSegment},
     },
 };
@@ -17,9 +17,10 @@ use super::{
     error::IrError,
     transform::{TransformContext, TypeInfo, transform_with_context},
     types::{
-        InlineTypeIds, ParameterStyle as IrParameterStyle, SchemaTypeInfo, SpecInlineType,
-        SpecOperation, SpecParameter, SpecParameterInfo, SpecRequest, SpecResponse, SpecSchemaType,
-        SpecType, shape::ResponseCase,
+        InlineTypeIds, ParameterStyle as IrParameterStyle, PrimitiveType, SchemaTypeInfo,
+        SpecContainer, SpecInlineType, SpecInner, SpecOperation, SpecParameter, SpecParameterInfo,
+        SpecRequest, SpecResponse, SpecSchemaType, SpecStruct, SpecStructField, SpecType,
+        StructFieldName, shape::ResponseCase,
     },
 };
 
@@ -254,7 +255,7 @@ impl<'a> Spec<'a> {
                         .responses
                         .keys()
                         .filter_map(|status| Some((status.as_str(), status.parse::<u16>().ok()?)))
-                        .filter(|&(_, status)| matches!(status, 200..300))
+                        .filter(|&(_, status)| matches!(status, 100..400))
                         .collect_vec();
                     statuses.sort_unstable_by_key(|&(_, code)| code);
 
@@ -308,6 +309,75 @@ impl<'a> Spec<'a> {
                                         arena.alloc(SpecInlineType::Any(ids.next()).into()),
                                     ),
                                 });
+                            let body = body.or_else(|| {
+                                let fields = response
+                                    .headers
+                                    .as_ref()?
+                                    .iter()
+                                    // Per OpenAPI, a `Content-Type` header
+                                    // definition SHALL be ignored.
+                                    .filter(|(name, _)| !name.eq_ignore_ascii_case("content-type"))
+                                    .filter_map(|(name, header)| {
+                                        let header = match header {
+                                            RefOrHeader::Other(header) => header,
+                                            RefOrHeader::Ref(r) => {
+                                                r.ref_.pointer().follow::<&Header>(doc).ok()?
+                                            }
+                                        };
+                                        let name: &_ = arena.alloc_str(&name.to_ascii_lowercase());
+                                        // Header values arrive as strings on
+                                        // the wire, so every header field is a
+                                        // string regardless of its declared
+                                        // schema type.
+                                        let string: &_ = arena.alloc(
+                                            SpecInlineType::Primitive(
+                                                ids.next(),
+                                                PrimitiveType::String,
+                                            )
+                                            .into(),
+                                        );
+                                        // Optional headers become nullable
+                                        // fields, so the generated struct
+                                        // holds `Option<String>`.
+                                        let ty: &_ = if header.required {
+                                            string
+                                        } else {
+                                            arena.alloc(
+                                                SpecInlineType::Container(
+                                                    ids.next(),
+                                                    SpecContainer::Optional(SpecInner {
+                                                        description: None,
+                                                        ty: string,
+                                                    }),
+                                                )
+                                                .into(),
+                                            )
+                                        };
+                                        Some(SpecStructField {
+                                            name: StructFieldName::Name(name),
+                                            ty,
+                                            required: true,
+                                            description: header.description.as_deref(),
+                                            flattened: false,
+                                        })
+                                    })
+                                    .collect_vec();
+                                (!fields.is_empty()).then(|| {
+                                    SpecResponse::Headers(
+                                        arena.alloc(
+                                            SpecInlineType::Struct(
+                                                ids.next(),
+                                                SpecStruct {
+                                                    description: response.description.as_deref(),
+                                                    fields: arena.alloc_slice_copy(&fields),
+                                                    parents: &[],
+                                                },
+                                            )
+                                            .into(),
+                                        ),
+                                    )
+                                })
+                            });
                             Some(ResponseCase { status, body })
                         })
                         .collect_vec();

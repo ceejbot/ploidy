@@ -14,7 +14,7 @@ use rustc_hash::FxHashMap;
 
 use super::{
     config::{CodegenConfig, DateTimeFormat},
-    naming::{CodegenIdentUsage, ResourceGroup, UniqueIdent, UniqueIdents},
+    naming::{CodegenIdentUsage, ResourceGroup, UniqueIdent, UniqueIdents, status_variant_name},
 };
 
 /// A [`CookedGraph`] decorated with Rust-specific information.
@@ -479,21 +479,7 @@ fn inline_type_candidate_name<'a>(
                 OperationUsage::Response { status } => {
                     full.push_str("Response");
                     if let Some(status) = status {
-                        match status {
-                            200 => full.push_str("Ok"),
-                            201 => full.push_str("Created"),
-                            202 => full.push_str("Accepted"),
-                            203 => full.push_str("NonAuthoritativeInformation"),
-                            204 => full.push_str("NoContent"),
-                            205 => full.push_str("ResetContent"),
-                            206 => full.push_str("PartialContent"),
-                            207 => full.push_str("MultiStatus"),
-                            208 => full.push_str("AlreadyReported"),
-                            226 => full.push_str("ImUsed"),
-                            _ => {
-                                write!(full, "Status{status}").unwrap();
-                            }
-                        }
+                        full.push_str(&status_variant_name(status));
                     }
                 }
             }
