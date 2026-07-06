@@ -192,6 +192,7 @@ impl<'a> Spec<'a> {
                             Some(match param.location {
                                 ParameterLocation::Path => SpecParameter::Path(info),
                                 ParameterLocation::Query => SpecParameter::Query(info),
+                                ParameterLocation::Header => SpecParameter::Header(info),
                                 _ => return None,
                             })
                         }

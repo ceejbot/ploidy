@@ -481,7 +481,11 @@ impl crate::client::Client {
             )
         )
     )]
-    pub async fn delete_pet(&self, pet_id: &str) -> Result<(), crate::error::Error> {
+    pub async fn delete_pet(
+        &self,
+        pet_id: &str,
+        api_key: Option<&str>,
+    ) -> Result<(), crate::error::Error> {
         let result: Result<_, crate::error::Error> = async move {
             let url = {
                 let mut url = self.base_url.clone();
@@ -503,6 +507,11 @@ impl crate::client::Client {
             };
             let request = {
                 let request = self.client.delete(url).headers(self.headers.clone());
+                let request = if let Some(api_key) = api_key {
+                    request.header("api_key", api_key)
+                } else {
+                    request
+                };
                 #[cfg(feature = "trace-context")]
                 let request = ::ploidy_util::trace::propagate(::tracing::Span::current(), request);
                 request
