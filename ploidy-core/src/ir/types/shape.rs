@@ -28,7 +28,7 @@ impl<'a, Ty> Operation<'a, Ty> {
             }),
             self.request.as_ref().and_then(|request| match request {
                 Request::Json(ty) => Some(ty),
-                Request::Multipart => None,
+                Request::Multipart | Request::Binary => None,
             }),
             self.responses.iter().filter_map(|response| {
                 response.body.as_ref().map(|body| match body {
@@ -60,6 +60,8 @@ pub enum Response<Ty> {
 pub enum Request<Ty> {
     Json(Ty),
     Multipart,
+    /// A raw `application/octet-stream` byte body.
+    Binary,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]

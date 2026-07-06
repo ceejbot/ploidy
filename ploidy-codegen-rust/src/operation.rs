@@ -168,6 +168,9 @@ impl ToTokens for CodegenOperation<'_> {
                 RequestView::Multipart => {
                     params.push(quote! { form: crate::util::reqwest::multipart::Form });
                 }
+                RequestView::Binary => {
+                    params.push(quote! { body: impl Into<crate::util::reqwest::Body> });
+                }
             }
         }
 
@@ -222,6 +225,16 @@ impl ToTokens for CodegenOperation<'_> {
                         .#method(url)
                         .headers(self.headers.clone())
                         .multipart(form);
+                },
+                Some(RequestView::Binary) => quote! {
+                    let request = self.client
+                        .#method(url)
+                        .headers(self.headers.clone())
+                        .header(
+                            crate::util::http::header::CONTENT_TYPE,
+                            "application/octet-stream",
+                        )
+                        .body(body.into());
                 },
                 None => quote! {
                     let request = self.client
@@ -839,6 +852,118 @@ mod tests {
     }
 
     // MARK: With query params and request body
+
+    #[test]
+    fn test_operation_with_octet_stream_request_body() {
+        let doc = Document::from_yaml(indoc::indoc! {"
+            openapi: 3.0.0
+            info:
+              title: Test API
+              version: 1.0.0
+            paths:
+              /upload:
+                post:
+                  operationId: uploadBytes
+                  requestBody:
+                    content:
+                      application/octet-stream:
+                        schema:
+                          type: string
+                          format: binary
+                  responses:
+                    '200':
+                      description: OK
+        "})
+        .unwrap();
+
+        let arena = Arena::new();
+        let spec = Spec::from_doc(&arena, &doc).unwrap();
+        let graph = CodegenGraph::new(RawGraph::new(&arena, &spec).cook());
+
+        let op = graph.operations().next().unwrap();
+        let codegen = CodegenOperation::new(&graph, &op);
+
+        let actual: syn::ImplItemFn = parse_quote!(#codegen);
+        let expected: syn::ImplItemFn = parse_quote! {
+            #[doc = " POST /upload"]
+            #[cfg_attr(
+                feature = "tracing",
+                ::tracing::instrument(
+                    skip_all,
+                    fields(
+                        otel.name = "POST /upload",
+                        otel.kind = "client",
+                        url.template = "/upload",
+                        http.request.method = "POST",
+                        server.address,
+                        server.port,
+                        url.full,
+                        http.response.status_code,
+                        error.type
+                    )
+                )
+            )]
+            pub async fn upload_bytes(
+                &self,
+                body: impl Into<crate::util::reqwest::Body>
+            ) -> Result<(), crate::error::Error> {
+                let result: Result<_, crate::error::Error> = async move {
+                    let url = {
+                        let mut url = self.base_url.clone();
+                        url.path_segments_mut()
+                            .map_err(|()| ::ploidy_util::url::PathAndQueryError::UrlCannotBeABase)?
+                            .pop_if_empty()
+                            .push("upload");
+                        #[cfg(feature = "tracing")]
+                        {
+                            ::tracing::record_all!(::tracing::Span::current(),
+                                server.address = url.host_str(),
+                                server.port = url.port_or_known_default(),
+                                url.full = url.as_str(),
+                            );
+                        }
+                        url
+                    };
+                    let request = {
+                        let request = self
+                            .client
+                            .post(url)
+                            .headers(self.headers.clone())
+                            .header(
+                                crate::util::http::header::CONTENT_TYPE,
+                                "application/octet-stream",
+                            )
+                            .body(body.into());
+                        #[cfg(feature = "trace-context")]
+                        let request = ::ploidy_util::trace::propagate(
+                            ::tracing::Span::current(),
+                            request,
+                        );
+                        request
+                    };
+                    let response = request.send().await?;
+                    #[cfg(feature = "tracing")]
+                    {
+                        ::tracing::record_all!(::tracing::Span::current(),
+                            http.response.status_code = response.status().as_u16()
+                        );
+                    }
+                    let response = response.error_for_status()?;
+                    let _ = response;
+                    Ok(())
+                }
+                .await;
+                #[cfg(feature = "tracing")]
+                if let Err(err) = &result {
+                    ::tracing::record_all!(::tracing::Span::current(),
+                        error.type = %err.category(),
+                    );
+                }
+                result
+            }
+        };
+        assert_eq!(actual, expected);
+    }
 
     #[test]
     fn test_operation_with_query_params_and_request_body() {

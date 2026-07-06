@@ -151,6 +151,7 @@ impl<'a> RawGraph<'a> {
                     SpecType::Ref(r) => schemas[&*r.name()],
                 }),
                 Request::Multipart => Request::Multipart,
+                Request::Binary => Request::Binary,
             });
 
             let responses = arena.alloc_slice_exact(op.responses.iter().map(|case| ResponseCase {
@@ -517,7 +518,7 @@ impl<'a> RawGraph<'a> {
                             let &ty = collapsed_to.get(&ty)?;
                             Some(Request::Json(ty))
                         }
-                        Request::Multipart => None,
+                        Request::Multipart | Request::Binary => None,
                     })
                     .or(op.request);
 
@@ -846,6 +847,7 @@ impl<'a> CookedGraph<'a> {
                 request: op.request.as_ref().map(|r| match r {
                     Request::Json(ty) => Request::Json(indices[ty]),
                     Request::Multipart => Request::Multipart,
+                    Request::Binary => Request::Binary,
                 }),
                 responses: raw
                     .arena

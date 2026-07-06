@@ -546,7 +546,7 @@ Ploidy is opinionated by design. We'd rather get the defaults right than expose 
 | Query parameters | Supported | `{OperationId}Query` struct argument |
 | Query `style` | Supported | `form`, `spaceDelimited`, `pipeDelimited`, `deepObject` |
 | Header and cookie parameters | Unsupported | - |
-| Request bodies | Partial | `application/json` and `*/*` schemas become typed model arguments; `multipart/form-data` becomes `reqwest::multipart::Form` |
+| Request bodies | Partial | `application/json` and `*/*` schemas become typed model arguments; `multipart/form-data` becomes `reqwest::multipart::Form`; `application/octet-stream` becomes an `impl Into<reqwest::Body>` byte argument |
 | Responses | Partial | The first `application/json` or `*/*` schema from either the lowest 2xx response or `default` becomes the return value; other response schemas are ignored |
 
 ## Contributing

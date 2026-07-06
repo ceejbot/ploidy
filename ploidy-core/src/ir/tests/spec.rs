@@ -759,6 +759,41 @@ fn test_parses_request_body_multipart() {
 }
 
 #[test]
+fn test_parses_request_body_octet_stream() {
+    let doc = Document::from_yaml(indoc::indoc! {"
+        openapi: 3.0.0
+        info:
+          title: Test API
+          version: 1.0
+        paths:
+          /upload:
+            post:
+              operationId: uploadBytes
+              requestBody:
+                content:
+                  application/octet-stream:
+                    schema:
+                      type: string
+                      format: binary
+              responses:
+                '200':
+                  description: Success
+    "})
+    .unwrap();
+
+    let arena = Arena::new();
+    let ir = Spec::from_doc(&arena, &doc).unwrap();
+
+    assert_matches!(
+        &*ir.operations,
+        [SpecOperation {
+            request: Some(SpecRequest::Binary),
+            ..
+        }],
+    );
+}
+
+#[test]
 fn test_parses_request_body_wildcard_content_type() {
     let doc = Document::from_yaml(indoc::indoc! {"
         openapi: 3.0.0

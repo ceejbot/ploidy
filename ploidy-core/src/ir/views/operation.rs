@@ -137,6 +137,7 @@ impl<'graph, 'a> OperationView<'graph, 'a> {
         self.op.request.as_ref().map(|ty| match ty {
             GraphRequest::Json(index) => RequestView::Json(TypeView::new(self.cooked, *index)),
             GraphRequest::Multipart => RequestView::Multipart,
+            GraphRequest::Binary => RequestView::Binary,
         })
     }
 
@@ -400,6 +401,8 @@ pub enum QueryParameter {}
 pub enum RequestView<'graph, 'a> {
     Json(TypeView<'graph, 'a>),
     Multipart,
+    /// A raw `application/octet-stream` byte body.
+    Binary,
 }
 
 /// A graph-aware view of an operation's response payload.

@@ -553,7 +553,7 @@ impl crate::client::Client {
         &self,
         pet_id: &str,
         query: &parameters::UploadFileQuery,
-        request: impl Into<::ploidy_util::serde_json::Value>,
+        body: impl Into<crate::util::reqwest::Body>,
     ) -> Result<crate::types::ApiResponse, crate::error::Error> {
         let result: Result<_, crate::error::Error> = async move {
             let url = {
@@ -584,7 +584,11 @@ impl crate::client::Client {
                     .client
                     .post(url)
                     .headers(self.headers.clone())
-                    .json(&request.into());
+                    .header(
+                        crate::util::http::header::CONTENT_TYPE,
+                        "application/octet-stream",
+                    )
+                    .body(body.into());
                 #[cfg(feature = "trace-context")]
                 let request = ::ploidy_util::trace::propagate(::tracing::Span::current(), request);
                 request

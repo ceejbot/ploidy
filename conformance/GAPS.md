@@ -26,16 +26,23 @@ prints a warning, so these are easy to miss:
 | Spec feature | What ploidy did | Evidence |
 |---|---|---|
 | `deletePet` `api_key` **header** param | Dropped; method is `delete_pet(&self, pet_id: &str)` | generated `client/default.rs` |
-| `uploadFile` **`application/octet-stream`** body | Became `request: impl Into<serde_json::Value>` — a JSON body where raw bytes belong | generated `client/default.rs` |
 | `petstore_auth` (oauth2) + `api_key` (apiKey) **security** | No auth wiring; caller must set headers by hand | no `security` parsing |
 | **`servers`** (`/api/v3`) | Ignored; base URL is caller-supplied | no `servers` parsing |
 | 4xx / `default` responses (400, 404, 422) | Collapsed to `Error::Status(code)`; no typed error body | `error_for_status()?` |
 | `application/xml` request bodies | Not offered; JSON alternative is picked when present | — |
 
 Correctly handled: JSON request/response bodies (typed, e.g. `add_pet(request: impl Into<Pet>)`),
-array query parameters with `explode` (`find_pets_by_status` → `QueryStyle::Form { exploded: true }`),
-the `status` string enum with an open catch-all variant, path parameters, and
-optional fields via `AbsentOr` (see `petstore-v3-client/tests/roundtrip.rs`).
+`application/octet-stream` request bodies (`upload_file(body: impl Into<reqwest::Body>)`,
+fixed in this branch — see below), array query parameters with `explode`
+(`find_pets_by_status` → `QueryStyle::Form { exploded: true }`), the `status`
+string enum with an open catch-all variant, path parameters, and optional fields
+via `AbsentOr` (see `petstore-v3-client/tests/roundtrip.rs`).
+
+**Fixed in this branch:** `application/octet-stream` request bodies previously
+degraded silently to a JSON `serde_json::Value` body. Ploidy now emits a `Binary`
+request kind — the method takes `body: impl Into<reqwest::Body>` and sends the
+raw bytes with an explicit `Content-Type: application/octet-stream`. This closed
+the highest-severity gap below.
 
 One ergonomic note: all 19 methods land in a single `default` resource. Ploidy
 groups methods by the `x-resourceId` / `x-resource-name` extensions, not by
@@ -64,7 +71,7 @@ ploidy handles today.
 
 | # | Gap | Severity | Where it bites in Petstore | Source | Direction |
 |---|-----|----------|----------------------------|--------|-----------|
-| 1 | Non-JSON request bodies (`octet-stream`, `x-www-form-urlencoded`) silently serialized as JSON | **High** (silent wrong output) | `uploadFile` sends a JSON `Value` instead of bytes | `ir/spec.rs` request selection (`RequestContent::Any` fall-through) | Model a `Binary`/`Form` request kind; emit `.body(bytes)` / `.form(&…)`; parse `requestBody.content.encoding` |
+| 1 | ~~`application/octet-stream` bodies~~ **done** (`Binary` kind). `application/x-www-form-urlencoded`-only bodies still serialize as JSON | Medium (was High) | no form-only body in Petstore; form ops also offer JSON | `ir/spec.rs` request selection (`RequestContent::Any` fall-through) | Add a `Form(schema)` kind emitting `.form(&…)`; parse `requestBody.content.encoding` |
 | 2 | External / `$id`-anchored `$ref` rejected | **High** (blocks whole specs) | v31 fails to parse | `parse/types.rs` `ComponentRef::from_str` | Resolve `$id`/`$anchor` document identity and same-document `$defs`; map absolute self-refs back to local schemas |
 | 3 | Header & cookie parameters silently dropped | **High** (silent loss) | `deletePet` `api_key` header missing | `ir/spec.rs` (`Header`/`Cookie` → `None`) | Add `Header`/`Cookie` parameter kinds; thread through method signature + `RequestBuilder` |
 | 4 | Security schemes unmodeled | **Medium-High** | `petstore_auth`, `api_key` produce no auth API | `parse/types.rs` `SecurityScheme` placeholder; `Operation` doesn't parse `security` | Parse schemes + per-op `security`; generate typed auth setters (bearer/apiKey/basic) over the existing header plumbing |
