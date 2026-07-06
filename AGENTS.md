@@ -201,3 +201,9 @@ if f.discriminator() { continue; }
 - **Design:** Push back or propose alternatives. Keep changes modular for partial reverts.
 - **Reverts:** Don't `git checkout --`. Manually restore to avoid data loss.
 - **Ask for help when:** requirements ambiguous, multiple valid approaches, tests fail for unclear reasons, scope larger than expected, new workspace crate needed, or approach seems wrong.
+
+---
+
+## Project memory
+
+This project uses the trivia MCP. All memories are tagged `project:ploidy`. Recall by that tag at the start of work. Add new lessons via the `session-retro` skill.
