@@ -23,12 +23,13 @@ impl<'a, Ty> Operation<'a, Ty> {
     pub fn types(&self) -> impl Iterator<Item = &Ty> {
         itertools::chain!(
             self.params.iter().map(|param| match param {
-                Parameter::Path(info) => &info.ty,
-                Parameter::Query(info) => &info.ty,
+                Parameter::Path(info) | Parameter::Query(info) | Parameter::Header(info) => {
+                    &info.ty
+                }
             }),
             self.request.as_ref().and_then(|request| match request {
                 Request::Json(ty) => Some(ty),
-                Request::Multipart => None,
+                Request::Multipart | Request::Binary => None,
             }),
             self.responses.iter().filter_map(|response| {
                 response.body.as_ref().map(|body| match body {
@@ -60,12 +61,16 @@ pub enum Response<Ty> {
 pub enum Request<Ty> {
     Json(Ty),
     Multipart,
+    /// A raw `application/octet-stream` byte body.
+    Binary,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum Parameter<'a, Ty> {
     Path(ParameterInfo<'a, Ty>),
     Query(ParameterInfo<'a, Ty>),
+    /// A request header parameter. Its value is rendered as a string.
+    Header(ParameterInfo<'a, Ty>),
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]

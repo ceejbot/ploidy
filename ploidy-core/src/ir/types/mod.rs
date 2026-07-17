@@ -100,6 +100,8 @@ pub enum OperationUsage<'a> {
     Path(&'a str),
     /// A query parameter with the given name.
     Query(&'a str),
+    /// A header parameter with the given name.
+    Header(&'a str),
     /// The request body.
     Request,
     /// The response body.

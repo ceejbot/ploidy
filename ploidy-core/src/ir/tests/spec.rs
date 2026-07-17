@@ -205,6 +205,56 @@ fn test_parses_path_parameter_string_type() {
 }
 
 #[test]
+fn test_parses_header_parameters_required_and_optional() {
+    let doc = Document::from_yaml(indoc::indoc! {"
+        openapi: 3.0.0
+        info:
+          title: Test API
+          version: 1.0
+        paths:
+          /thing:
+            get:
+              operationId: getThing
+              parameters:
+                - name: X-Required
+                  in: header
+                  required: true
+                  schema:
+                    type: string
+                - name: X-Optional
+                  in: header
+                  schema:
+                    type: string
+              responses:
+                '200':
+                  description: Success
+    "})
+    .unwrap();
+
+    let arena = Arena::new();
+    let ir = Spec::from_doc(&arena, &doc).unwrap();
+
+    assert_matches!(
+        &*ir.operations,
+        [SpecOperation {
+            params: [
+                SpecParameter::Header(SpecParameterInfo {
+                    name: "X-Required",
+                    required: true,
+                    ..
+                }),
+                SpecParameter::Header(SpecParameterInfo {
+                    name: "X-Optional",
+                    required: false,
+                    ..
+                }),
+            ],
+            ..
+        }],
+    );
+}
+
+#[test]
 fn test_parses_path_parameter_integer_type() {
     let doc = Document::from_yaml(indoc::indoc! {"
         openapi: 3.0.0
@@ -753,6 +803,41 @@ fn test_parses_request_body_multipart() {
         &*ir.operations,
         [SpecOperation {
             request: Some(SpecRequest::Multipart),
+            ..
+        }],
+    );
+}
+
+#[test]
+fn test_parses_request_body_octet_stream() {
+    let doc = Document::from_yaml(indoc::indoc! {"
+        openapi: 3.0.0
+        info:
+          title: Test API
+          version: 1.0
+        paths:
+          /upload:
+            post:
+              operationId: uploadBytes
+              requestBody:
+                content:
+                  application/octet-stream:
+                    schema:
+                      type: string
+                      format: binary
+              responses:
+                '200':
+                  description: Success
+    "})
+    .unwrap();
+
+    let arena = Arena::new();
+    let ir = Spec::from_doc(&arena, &doc).unwrap();
+
+    assert_matches!(
+        &*ir.operations,
+        [SpecOperation {
+            request: Some(SpecRequest::Binary),
             ..
         }],
     );
@@ -1959,7 +2044,7 @@ fn test_mixed_path_and_query_parameters() {
 }
 
 #[test]
-fn test_ignores_header_and_cookie_parameters() {
+fn test_keeps_header_parameters_but_ignores_cookies() {
     let doc = Document::from_yaml(indoc::indoc! {"
         openapi: 3.0.0
         info:
@@ -1989,8 +2074,18 @@ fn test_ignores_header_and_cookie_parameters() {
     let arena = Arena::new();
     let ir = Spec::from_doc(&arena, &doc).unwrap();
 
-    // Header and cookie parameters are ignored for now.
-    assert_matches!(&*ir.operations, [SpecOperation { params: [], .. }]);
+    // Header parameters become method arguments; cookie parameters are
+    // still ignored.
+    assert_matches!(
+        &*ir.operations,
+        [SpecOperation {
+            params: [SpecParameter::Header(SpecParameterInfo {
+                name: "X-API-Key",
+                ..
+            })],
+            ..
+        }],
+    );
 }
 
 // MARK: Path item parameters
@@ -2288,7 +2383,7 @@ fn test_path_item_ref_parameter_inherited_by_operation() {
 }
 
 #[test]
-fn test_path_item_ignores_header_and_cookie_parameters() {
+fn test_path_item_keeps_header_ignores_cookie() {
     let doc = Document::from_yaml(indoc::indoc! {"
         openapi: 3.0.0
         info:
@@ -2318,7 +2413,18 @@ fn test_path_item_ignores_header_and_cookie_parameters() {
     let arena = Arena::new();
     let ir = Spec::from_doc(&arena, &doc).unwrap();
 
-    assert_matches!(&*ir.operations, [SpecOperation { params: [], .. }]);
+    // The path-item header parameter is inherited by the operation; the
+    // cookie parameter is still ignored.
+    assert_matches!(
+        &*ir.operations,
+        [SpecOperation {
+            params: [SpecParameter::Header(SpecParameterInfo {
+                name: "X-API-Key",
+                ..
+            })],
+            ..
+        }],
+    );
 }
 
 #[test]

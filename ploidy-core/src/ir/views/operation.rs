@@ -131,12 +131,22 @@ impl<'graph, 'a> OperationView<'graph, 'a> {
         })
     }
 
+    /// Returns an iterator over this operation's header parameters.
+    #[inline]
+    pub fn headers(&self) -> impl Iterator<Item = ParameterView<'_, 'graph, 'a, HeaderParameter>> {
+        self.op.params.iter().filter_map(|param| match param {
+            GraphParameter::Header(info) => Some(ParameterView::new(self, info)),
+            _ => None,
+        })
+    }
+
     /// Returns a view of the request body, if present.
     #[inline]
     pub fn request(&self) -> Option<RequestView<'graph, 'a>> {
         self.op.request.as_ref().map(|ty| match ty {
             GraphRequest::Json(index) => RequestView::Json(TypeView::new(self.cooked, *index)),
             GraphRequest::Multipart => RequestView::Multipart,
+            GraphRequest::Binary => RequestView::Binary,
         })
     }
 
@@ -395,11 +405,17 @@ pub enum PathParameter {}
 #[derive(Clone, Copy, Debug)]
 pub enum QueryParameter {}
 
+/// A marker type for a header parameter.
+#[derive(Clone, Copy, Debug)]
+pub enum HeaderParameter {}
+
 /// A graph-aware view of an operation's request body.
 #[derive(Debug)]
 pub enum RequestView<'graph, 'a> {
     Json(TypeView<'graph, 'a>),
     Multipart,
+    /// A raw `application/octet-stream` byte body.
+    Binary,
 }
 
 /// A graph-aware view of an operation's response payload.

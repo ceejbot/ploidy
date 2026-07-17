@@ -142,6 +142,17 @@ impl<'a> RawGraph<'a> {
                     description: info.description,
                     style: info.style,
                 }),
+                Parameter::Header(info) => Parameter::Header(ParameterInfo {
+                    name: info.name,
+                    ty: match info.ty {
+                        SpecType::Schema(s) => indices[&ResolvedSpecType::Schema(s)],
+                        SpecType::Inline(i) => indices[&ResolvedSpecType::Inline(i)],
+                        SpecType::Ref(r) => schemas[&*r.name()],
+                    },
+                    required: info.required,
+                    description: info.description,
+                    style: info.style,
+                }),
             }));
 
             let request = op.request.as_ref().map(|r| match r {
@@ -151,6 +162,7 @@ impl<'a> RawGraph<'a> {
                     SpecType::Ref(r) => schemas[&*r.name()],
                 }),
                 Request::Multipart => Request::Multipart,
+                Request::Binary => Request::Binary,
             });
 
             let responses = arena.alloc_slice_exact(op.responses.iter().map(|case| ResponseCase {
@@ -505,6 +517,9 @@ impl<'a> RawGraph<'a> {
                             Parameter::Query(info) => collapsed_to
                                 .get(&info.ty)
                                 .map(|&ty| Parameter::Query(ParameterInfo { ty, ..info })),
+                            Parameter::Header(info) => collapsed_to
+                                .get(&info.ty)
+                                .map(|&ty| Parameter::Header(ParameterInfo { ty, ..info })),
                         };
                         rewrite.unwrap_or(param)
                     })
@@ -517,7 +532,7 @@ impl<'a> RawGraph<'a> {
                             let &ty = collapsed_to.get(&ty)?;
                             Some(Request::Json(ty))
                         }
-                        Request::Multipart => None,
+                        Request::Multipart | Request::Binary => None,
                     })
                     .or(op.request);
 
@@ -842,10 +857,18 @@ impl<'a> CookedGraph<'a> {
                             description: info.description,
                             style: info.style,
                         }),
+                        Parameter::Header(info) => Parameter::Header(ParameterInfo {
+                            name: info.name,
+                            ty: indices[&info.ty],
+                            required: info.required,
+                            description: info.description,
+                            style: info.style,
+                        }),
                     })),
                 request: op.request.as_ref().map(|r| match r {
                     Request::Json(ty) => Request::Json(indices[ty]),
                     Request::Multipart => Request::Multipart,
+                    Request::Binary => Request::Binary,
                 }),
                 responses: raw
                     .arena
@@ -1243,6 +1266,7 @@ impl<'graph, 'a> MetadataBuilder<'graph, 'a> {
                 let (usage, info) = match param {
                     Parameter::Path(info) => (OperationUsage::Path(info.name), info),
                     Parameter::Query(info) => (OperationUsage::Query(info.name), info),
+                    Parameter::Header(info) => (OperationUsage::Header(info.name), info),
                 };
                 if matches!(self.graph[info.ty], GraphType::Inline(_)) && bfs.discover(info.ty) {
                     by_node.insert(

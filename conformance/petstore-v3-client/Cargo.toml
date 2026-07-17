@@ -1,0 +1,15 @@
+[package]
+name = "petstore-v3-client"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# The `path` key points at this fork's in-tree runtime so the golden client
+# compiles against the same `ploidy-util` that generated it (this branch carries
+# unreleased runtime changes). Ploidy's manifest merger preserves `path` across
+# regeneration, so `just conformance` keeps it.
+ploidy-util = { version = "0.16.0", path = "../../ploidy-util" }
+
+[features]
+trace-context = ["tracing", "ploidy-util/trace-context"]
+tracing = ["ploidy-util/tracing"]

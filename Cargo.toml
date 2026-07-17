@@ -7,6 +7,10 @@ members = [
     "ploidy-pointer-derive",
     "ploidy-util",
 ]
+# The checked-in golden client generated from `conformance/specs/petstore-v3.json`
+# is built and tested on its own (see `conformance/`), not as a workspace member,
+# so its `reqwest`/`tokio` dependency tree stays out of the main build and lint matrix.
+exclude = ["conformance/petstore-v3-client"]
 resolver = "3"
 
 [workspace.package]

@@ -52,6 +52,7 @@ impl<'a> CodegenGraph<'a> {
             Operation(op) => self.idents[&Key::Operation(op)],
             Path(op, name) => self.idents[&Key::Parameter(op, ParameterLocation::Path, name)],
             Query(op, name) => self.idents[&Key::Parameter(op, ParameterLocation::Query, name)],
+            Header(op, name) => self.idents[&Key::Parameter(op, ParameterLocation::Header, name)],
             Type(id) => self.idents[&Key::Type(id)],
             StructField(id, name) => self.idents[&Key::StructField(id, name)],
             EnumVariant(id, name) => self.idents[&Key::EnumVariant(id, name)],
@@ -95,6 +96,8 @@ pub enum IdentMapping<'a> {
     Path(&'a OperationId, &'a str),
     /// A query parameter for an operation.
     Query(&'a OperationId, &'a str),
+    /// A header parameter for an operation.
+    Header(&'a OperationId, &'a str),
     /// A struct field.
     StructField(TypeId, StructFieldName<'a>),
     /// A string enum variant.
@@ -167,6 +170,15 @@ fn ident_map<'a>(cooked: &CookedGraph<'a>) -> IdentMap<'a> {
                 let ident = scope.claim(param.name());
                 idents.insert(
                     IdentMapKey::Parameter(op.id(), ParameterLocation::Path, param.name()),
+                    ident,
+                );
+            }
+            // Header parameters are method arguments too, so they claim names
+            // from the same scope as path parameters.
+            for param in op.headers() {
+                let ident = scope.claim(param.name());
+                idents.insert(
+                    IdentMapKey::Parameter(op.id(), ParameterLocation::Header, param.name()),
                     ident,
                 );
             }
@@ -474,6 +486,11 @@ fn inline_type_candidate_name<'a>(
                     let ident =
                         idents[&IdentMapKey::Parameter(id, ParameterLocation::Query, param)];
                     write!(full, "Query{}", CodegenIdentUsage::Type(ident).display()).unwrap();
+                }
+                OperationUsage::Header(param) => {
+                    let ident =
+                        idents[&IdentMapKey::Parameter(id, ParameterLocation::Header, param)];
+                    write!(full, "Header{}", CodegenIdentUsage::Type(ident).display()).unwrap();
                 }
                 OperationUsage::Request => full.push_str("Request"),
                 OperationUsage::Response { status } => {

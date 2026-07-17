@@ -192,6 +192,7 @@ impl<'a> Spec<'a> {
                             Some(match param.location {
                                 ParameterLocation::Path => SpecParameter::Path(info),
                                 ParameterLocation::Query => SpecParameter::Query(info),
+                                ParameterLocation::Header => SpecParameter::Header(info),
                                 _ => return None,
                             })
                         }
@@ -232,6 +233,8 @@ impl<'a> Spec<'a> {
                             && let Some(schema) = &content.schema
                         {
                             RequestContent::Json(schema)
+                        } else if request.content.contains_key("application/octet-stream") {
+                            RequestContent::Binary
                         } else {
                             RequestContent::Any
                         })
@@ -244,6 +247,7 @@ impl<'a> Spec<'a> {
                         RequestContent::Json(RefOrSchema::Inline(schema)) => SpecRequest::Json(
                             arena.alloc(transform_with_context(&context, ids.next(), schema)),
                         ),
+                        RequestContent::Binary => SpecRequest::Binary,
                         RequestContent::Any => {
                             SpecRequest::Json(arena.alloc(SpecInlineType::Any(ids.next()).into()))
                         }
@@ -435,6 +439,7 @@ pub(super) enum ResolvedSpecType<'a> {
 enum RequestContent<'a> {
     Multipart,
     Json(&'a RefOrSchema),
+    Binary,
     Any,
 }
 
