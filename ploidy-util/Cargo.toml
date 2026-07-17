@@ -32,7 +32,11 @@ reqwest = { version = "0.13", default-features = false, features = [
     "json",
     "multipart",
     "query",
-    "rustls",
+    # rustls without a bundled crypto provider: the embedding
+    # application installs a process-default CryptoProvider itself.
+    # (Boltzmann pins ring; reqwest's plain "rustls" feature would
+    # force aws-lc-rs into every consumer via feature unification.)
+    "rustls-no-provider",
 ] }
 serde = { workspace = true, features = ["derive"] }
 serde_bytes = "0.11"
