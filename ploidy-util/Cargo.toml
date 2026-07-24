@@ -51,10 +51,7 @@ uuid = { version = "1", features = ["serde", "v4"] }
 [features]
 default = ["tls"]
 # Bundles reqwest's default rustls crypto provider (aws-lc-rs), so
-# generated clients work over HTTPS with no further setup. Disable
-# default features to choose a provider instead: enable one of rustls's
-# provider features, or install a process-default `CryptoProvider`
-# before constructing clients.
+# generated clients work over HTTPS with no further setup.
 tls = ["reqwest/rustls"]
 did-you-mean = ["ploidy-pointer/did-you-mean"]
 tracing = ["dep:tracing"]
